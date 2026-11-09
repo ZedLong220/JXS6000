@@ -24,7 +24,6 @@ namespace SmallProject.WindowController
         public bool TryReadModelJoints(out double[] angles)
         {
             if (!TryReadValues(JointInputs, "关节角度", out angles)) return false;
-            if (Math.Abs(angles[5])>1e-8) { JLog.Info("实际五轴为J1～J5，J6必须固定为0°。"); return false; }
             if (App.Core.Jyker.dof6Solver.Model.WithinLimits(angles)) return true;
             JLog.Info("关节角度超出 URDF 模型限位。");
             return false;
@@ -37,7 +36,7 @@ namespace SmallProject.WindowController
         public bool ApplyModelJoints(double[] q, bool updatePreview = true)
         {
             var arm = App.Core.Jyker;
-            if (q == null || q.Length != 6 || Math.Abs(q[5]) > 1e-8 ||
+            if (q == null || q.Length != 6 ||
                 !arm.dof6Solver.Model.WithinLimits(q)) return false;
             arm.prepareJoints = new Joint6D_t(JointCoordinateMap.ToLegacy(q));
             arm.preparePose6D = arm.dof6Solver.Model.Forward(q);
@@ -59,11 +58,10 @@ namespace SmallProject.WindowController
                 var pose = new Pose6D_t(values);
                 var answer = await Task.Run(() => {
                     var lower=model.LowerDegrees.ToArray(); var upper=model.UpperDegrees.ToArray();
-                    lower[5]=upper[5]=0;
                     bool ok = model.TryInverse(pose, seed, out var q,lower,upper);
                     return (ok, q);
                 });
-                if (!answer.ok) { JLog.Info("五轴模式未找到逆解：J6固定，目标位置和姿态可能无法同时满足。"); return false; }
+                if (!answer.ok) { JLog.Info("六轴模式未找到满足限位的逆解，请调整目标位置和姿态。"); return false; }
                 ApplyModelJoints(answer.q);
                 JLog.Info("URDF 逆解完成；已更新预览，尚未发送电机指令。");
                 return true;

@@ -6,6 +6,18 @@ import { JXS6000_SAFETY_OPTIONS } from '../robotConfig.js';
 import { validateMotion, validatePath } from '../hmiBridge.js';
 import fs from 'node:fs';
 
+test('all six axes including physical J6 follow the actual rounded curve', () => {
+  const samples=JSON.parse(fs.readFileSync(new URL('../../Tests/bin/Debug/net10.0/six-axis-samples.json',import.meta.url),'utf8'));
+  const {robot}=loadFixture();
+  const names=Array.from({length:6},(_,i)=>`joint_${i+1}`);
+  for(let axis=0;axis<6;axis++) assert.ok(samples.some(q=>Math.abs(q[axis])>0.1));
+  const guard=createRobotSafetyGuard(robot,JXS6000_SAFETY_OPTIONS);
+  const result=validatePath(robot,names,samples,guard);
+  assert.equal(result.ok,true,result.reason);
+  assert.equal(validateMotion(robot,names,[0,0,0,0,0,-180],[0,0,0,0,0,180],guard).ok,true);
+  assert.equal(validateMotion(robot,names,[0,0,0,0,0,0],[0,0,0,0,0,181],guard).ok,false);
+});
+
 test('five physical axes follow the actual rounded wire samples safely', () => {
   const fixture=new URL('../../Tests/bin/Debug/net10.0/five-axis-samples.json',import.meta.url);
   const samples=JSON.parse(fs.readFileSync(fixture,'utf8'));

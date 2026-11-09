@@ -42,21 +42,24 @@ namespace SmallProject.Diagnostics
                 }
                 Check(JointCoordinateMap.ToModel(App.Core.Jyker.prepareJoints.a).Zip(expanded).All(p=>Math.Abs(p.First-p.Second)<1e-8), "Expanded J2/J3 angles synchronize through WebView");
                 var fivePlan=ContinuousPathPlanner.Build(App.Core.Jyker.dof6Solver.Model,zero,
-                    new[]{new double[]{.5,-.5,.5,.5,.5,0},new double[]{-.5,-.5,-.5,-.5,-.5,0},zero},
-                    new[]{1.0,1.0,1.0},new[]{30.0/360,-150.0/360,150.0/360,-100.0/360,100.0/360},false);
-                Check((await preview.ValidatePathAsync(fivePlan.Samples)).ok,"Five-axis rounded wire curve passes WebView validation");
-                Check(window.bt_MoveFivePath.IsVisible && window.bt_MoveFivePath.ActualHeight>0,"Five-axis path button is visible");
+                    new[]{new double[]{.5,-.5,.5,.5,.5,30},new double[]{-.5,-.5,-.5,-.5,-.5,-45},zero},
+                    new[]{1.0,1.0,1.0},new[]{30.0/360,-150.0/360,150.0/360,-100.0/360,100.0/360,1.0/360},false);
+                Check((await preview.ValidatePathAsync(fivePlan.Samples)).ok,"Six-axis rounded wire curve passes WebView validation");
+                Check(window.bt_MoveFivePath.IsVisible && window.bt_MoveFivePath.ActualHeight>0,"Six-axis path button is visible");
                 // A rendered button must also be reachable, not covered by another row.
                 window.bt_MoveFivePath.IsEnabled=true;
                 var buttonPoint=window.bt_MoveFivePath.TranslatePoint(new System.Windows.Point(
                     window.bt_MoveFivePath.ActualWidth/2,window.bt_MoveFivePath.ActualHeight/2),window);
                 var hit=window.InputHitTest(buttonPoint) as System.Windows.DependencyObject;
                 Check(hit==window.bt_MoveFivePath || (hit!=null && window.bt_MoveFivePath.IsAncestorOf(hit)),
-                    "Five-axis path button is not covered by video controls");
+                    "Six-axis path button is not covered by video controls");
                 window.bt_MoveFivePath.IsEnabled=false;
-                Check(window.tb_Joint6.IsReadOnly,"Virtual J6 input is read-only");
-                Check(!window.JykerKinematicContrl.ApplyModelJoints(new double[]{0,0,0,0,0,1}),"Native interface rejects virtual J6 movement");
-                var q = new double[] {0,0,0,0,30,0};
+                Check(!window.tb_Joint6.IsReadOnly,"J6 input is editable");
+                Check(window.pg_ClawAngle.Maximum==180 && window.bt_ClawApply.IsVisible,"Gripper PWM controls are available");
+                Check(window.JykerKinematicContrl.ApplyModelJoints(new double[]{0,0,0,0,0,1}),"Native interface accepts physical J6 movement");
+                Check(!window.JykerKinematicContrl.ApplyModelJoints(new double[]{0,0,0,0,0,181}),"J6 over +180 is rejected");
+                Check((await preview.ValidateMotionAsync(new double[]{0,0,0,0,0,-180},new double[]{0,0,0,0,0,180})).ok,"J6 traverses the full -180 to +180 range");
+                var q = new double[] {0,0,0,0,30,25};
                 window.JykerKinematicContrl.ApplyModelJoints(q);
                 Check((await preview.ValidateMotionAsync(zero, q)).ok, "Native-to-preview pose path");
                 using var state = JsonDocument.Parse(await preview.ReadDiagnosticStateAsync());
@@ -69,7 +72,7 @@ namespace SmallProject.Diagnostics
                 var expected = App.Core.Jyker.dof6Solver.Model.ToolTransform(q);
                 Check(Enumerable.Range(0,16).All(i=>Math.Abs(tool[(i%4)*4+i/4]-expected[i])<1e-8), "Native FK equals WebView tool0 transform");
                 Check(JointCoordinateMap.ToModel(App.Core.Jyker.prepareJoints.a).Zip(q).All(p=>Math.Abs(p.First-p.Second)<1e-8), "Preview-to-native message synchronization");
-                var reverse = new double[] {0,0,0,0,-20,0};
+                var reverse = new double[] {0,0,0,0,-20,-15};
                 preview.SetJoints(reverse);
                 for (int attempt=0;attempt<40;attempt++)
                 {

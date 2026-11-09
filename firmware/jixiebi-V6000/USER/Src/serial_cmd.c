@@ -2,6 +2,7 @@
 #include "can_protocol.h"
 #include "host_bridge.h"
 #include "usart.h"
+#include "gripper_servo.h"
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -55,6 +56,19 @@ static int process_control(uint8_t cmd, const uint8_t *data, uint8_t length)
     uint8_t index, isPath;
     float target, duration;
     uint32_t now = HAL_GetTick();
+    if (cmd>=0x55U && cmd<=0x57U) {
+        uint8_t status[8];
+        if (cmd==0x55U) {
+            float angle;
+            if (length!=4U) return 0;
+            memcpy(&angle,data,4U);
+            if (Gripper_SetAngle(angle)!=0) return 0;
+        } else if (cmd==0x56U) {
+            if (length!=0U || Gripper_Disable()!=0) return 0;
+        } else if (length!=0U) return 0;
+        Gripper_GetStatus(status);
+        return CAN_SendHostFrame(0x57U,status,8U)==0;
+    }
     if (cmd>=0x50U && cmd<=0x54U) {
         float value; uint16_t sequence;
         static const uint8_t lengths[5]={2U,5U,6U,8U,2U};
@@ -153,7 +167,7 @@ static int process_control(uint8_t cmd, const uint8_t *data, uint8_t length)
 static int is_control(uint8_t cmd)
 {
     return cmd == CAN_CMD_STOP || cmd == 0x04U || cmd == CAN_CMD_SET_HOME ||
-           (cmd>=0x50U && cmd<=0x54U) ||
+           (cmd>=0x50U && cmd<=0x57U) ||
            cmd == CAN_CMD_TRAJECTORY_CONTROL || cmd == CAN_CMD_TRAJECTORY_SYNC ||
            cmd==0x68U || cmd==0x64U ||
            (cmd >= CAN_CMD_HOST_J2_POSITION_TIME && cmd <= CAN_CMD_HOST_J3_TRAJECTORY_POINT);

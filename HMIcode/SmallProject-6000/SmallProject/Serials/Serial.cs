@@ -16,6 +16,7 @@ namespace SmallProject.Serials
 {
     public class Serial
     {
+        public event Action<float,int,bool>? GripperStatusReceived;
 
         private sealed class OutboundCommand
         {
@@ -314,9 +315,17 @@ namespace SmallProject.Serials
                             string stateText = state < controllerStates.Length ? controllerStates[state] : $"未知状态{state}";
                             string errorText = error < controllerErrors.Length ? controllerErrors[error] : $"未知错误{error}";
                             string capabilities = aFrame.Data.Length >= 8
-                                ? $"，参与轴=0x{aFrame.Data[6]:X2}，协议={aFrame.Data[7]}（bit0～4=J1～J5）"
+                                ? $"，参与轴=0x{aFrame.Data[6]:X2}，协议={aFrame.Data[7]}（bit0～5=J1～J6）"
                                 : string.Empty;
                             JLog.Info($"主控状态：{stateText}，错误：{errorText}，在线轴=0x{aFrame.Data[2]:X2}，运动轴=0x{aFrame.Data[3]:X2}{capabilities}");
+                            break;
+                        case 0x57:
+                            if(aFrame.Id==0 && aFrame.Data.Length==8 && aFrame.Data[7]==1) {
+                                float gripperAngle=BitConverter.ToSingle(aFrame.Data,0);
+                                int pulse=aFrame.Data[4]|(aFrame.Data[5]<<8);
+                                if(float.IsFinite(gripperAngle) && gripperAngle>=0 && gripperAngle<=180 && pulse<=2500)
+                                    GripperStatusReceived?.Invoke(gripperAngle,pulse,aFrame.Data[6]!=0);
+                            }
                             break;
                         case 0x21:
                             //电流信息

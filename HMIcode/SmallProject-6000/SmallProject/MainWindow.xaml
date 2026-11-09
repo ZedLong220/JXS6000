@@ -86,56 +86,26 @@
                     <TextBox BorderThickness="0" x:Name="tbLogLive" Style="{StaticResource BigTextBox}" FontSize="20"/>
                 </TabItem>
             </TabControl>
-            <GroupBox Header="夹爪控制" Grid.Row="1" x:Name="gb_ClawControl" IsEnabled="False">
-                <Grid rubyer:GridHelper.RowDefinitions="40,40,40,40,*">
-                    <Grid rubyer:GridHelper.ColumnDefinitions="*,*,*,*" >
-                        <Grid Grid.Column="0" Margin="2">
-                            <Button x:Name="bt_ClawHome" >夹爪回零</Button>
-                        </Grid>
-                        <Grid Grid.Column="1" Margin="2">
-                            <Button x:Name="bt_ClawStop" >夹爪关闭堵转</Button>
-                        </Grid>
-                        <Grid Grid.Column="2" Margin="2">
-                            <Button x:Name="bt_ClawLoopStart" >开始监视信息</Button>
-                        </Grid>
-                        <Grid Grid.Column="3" Margin="2">
-                            <Button x:Name="bt_ClawLoopEnd" IsEnabled="False" >停止监视信息</Button>
-                        </Grid>
+            <GroupBox Header="夹爪舵机 · PA0" Grid.Row="1" x:Name="gb_ClawControl" IsEnabled="False">
+                <Grid rubyer:GridHelper.RowDefinitions="40,40,40,*">
+                    <Grid rubyer:GridHelper.ColumnDefinitions="80,*,65">
+                        <TextBlock Margin="4" VerticalAlignment="Center">舵机角度：</TextBlock>
+                        <Slider Grid.Column="1" x:Name="pg_ClawAngle" Minimum="0" Maximum="180" Value="90"
+                                TickFrequency="1" IsSnapToTickEnabled="True" VerticalAlignment="Center" />
+                        <TextBlock Grid.Column="2" x:Name="tb_ClawAngle" VerticalAlignment="Center" Margin="4">90°</TextBlock>
                     </Grid>
-                    <Grid Grid.Row="1" rubyer:GridHelper.ColumnDefinitions="60,*,50,60,*,50">
-                        <Grid Grid.Column="0" Margin="2">
-                            <TextBlock>末端夹角：</TextBlock>
-                        </Grid>
-                        <Grid Grid.Column="1" Margin="2">
-                            <Slider Margin="0 12 0 0" Value="0" x:Name="pg_ClawAngle" Minimum="0" Maximum="90"></Slider>
-                        </Grid>
-                        <Grid Grid.Column="2" Margin="2">
-                            <TextBlock x:Name="tb_ClawAngle">0°</TextBlock>
-                        </Grid>
-                        <Grid Grid.Column="3" Margin="2">
-                            <TextBlock>末端长度：</TextBlock>
-                        </Grid>
-                        <Grid Grid.Column="4" Margin="2">
-                            <ProgressBar Margin="0 16 0 0" Value="0" x:Name="pg_ClawLength"></ProgressBar>
-                        </Grid>
-                        <Grid Grid.Column="5" Margin="2">
-                            <TextBlock x:Name="tb_ClawLength">0mm</TextBlock>
-                        </Grid>
+                    <Grid Grid.Row="1" rubyer:GridHelper.ColumnDefinitions="*,*,*">
+                        <Button x:Name="bt_ClawApply" Margin="3">发送角度</Button>
+                        <Button Grid.Column="1" x:Name="bt_ClawHome" Margin="3">发送0°</Button>
+                        <Button Grid.Column="2" x:Name="bt_ClawFull" Margin="3">发送180°</Button>
                     </Grid>
-                    <Grid Grid.Row="2" rubyer:GridHelper.ColumnDefinitions="60,*,50,60,*,50">
-                        <Grid Grid.Column="0" Margin="2">
-                            <TextBlock>末端受力：</TextBlock>
-                        </Grid>
-                        <Grid Grid.Column="1" Margin="2">
-                            <ProgressBar Margin="0 16 0 0" Value="0" x:Name="pg_ClawPower" Minimum="0" Maximum="2000"></ProgressBar>
-                        </Grid>
-                        <Grid Grid.Column="2" Margin="2">
-                            <TextBlock x:Name="tb_ClawPower" >0</TextBlock>
-                        </Grid>
-
+                    <Grid Grid.Row="2" rubyer:GridHelper.ColumnDefinitions="*,*">
+                        <Button x:Name="bt_ClawStop" Margin="3">关闭PWM输出</Button>
+                        <Button Grid.Column="1" x:Name="bt_ClawLoopStart" Margin="3">查询PWM状态</Button>
                     </Grid>
+                    <TextBlock Grid.Row="3" x:Name="tb_GripperStatus" Margin="5" TextWrapping="Wrap"
+                               Text="上电无脉冲；50Hz，500～2500µs。显示为指令值，无舵机位置反馈。" />
                 </Grid>
-
             </GroupBox>
             <GroupBox Header="力矩信息" Grid.Row="2"  x:Name="gb_ArmControl" IsEnabled="False">
                 <Grid rubyer:GridHelper.RowDefinitions="240,50">
@@ -291,10 +261,10 @@
                     </Grid>
                     <Grid rubyer:GridHelper.ColumnDefinitions="*,*" Grid.Row="12">
                         <Grid Grid.Column="0" Margin="2">
-                            <TextBlock>J6 虚拟固定:</TextBlock>
+                            <TextBlock>J6 / °:</TextBlock>
                         </Grid>
                         <Grid Grid.Column="1" Margin="2">
-                            <TextBox x:Name="tb_Joint6" IsReadOnly="True" ToolTip="实际五轴为J1～J5，J6固定为0°">0</TextBox>
+                            <TextBox x:Name="tb_Joint6" ToolTip="第六轴角度范围 -180°～180°">0</TextBox>
                         </Grid>
                     </Grid>
                     <Grid rubyer:GridHelper.ColumnDefinitions="*,*" Grid.Row="13">
@@ -315,7 +285,7 @@
                     </Grid>
                     <Grid rubyer:GridHelper.ColumnDefinitions="*,*" Grid.Row="15">
                         <Grid Grid.Column="0" Margin="2">
-                            <Button x:Name="bt_MoveJoint" >五轴联动到目标</Button>
+                            <Button x:Name="bt_MoveJoint" >六轴联动到目标</Button>
                         </Grid>
                         <Grid Grid.Column="1" Margin="2">
                             <Button x:Name="bt_GetCurrentAngle" >最近指令位置</Button>
@@ -338,7 +308,7 @@
                         </Grid>
                     </Grid>
                     <Grid rubyer:GridHelper.ColumnDefinitions="*,*" Grid.Row="19">
-                        <Button x:Name="bt_MoveFivePath" Margin="2">五轴点位连续运动</Button>
+                        <Button x:Name="bt_MoveFivePath" Margin="2">六轴点位连续运动</Button>
                         <CheckBox x:Name="cb_RepeatFivePath" Grid.Column="1" VerticalAlignment="Center"
                                   ToolTip="按记录顺序运行后回到本次启动位置，重复直到停止；每圈末端停车">循环（回起点）</CheckBox>
                     </Grid>

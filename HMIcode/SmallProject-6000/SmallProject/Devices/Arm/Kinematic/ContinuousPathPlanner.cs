@@ -11,13 +11,13 @@ namespace SmallProject.Devices.Arm.Kinematic
         public sealed class Segment
         {
             public float Duration;
-            public float[] End = new float[5], EndVelocity = new float[5];
+            public float[] End = new float[6], EndVelocity = new float[6];
             public double[][] Controls = Array.Empty<double[]>();
             public double[] ReferenceStart = Array.Empty<double>(), ReferenceEnd = Array.Empty<double>();
         }
         public sealed class Plan
         {
-            public float[] Start = new float[5];
+            public float[] Start = new float[6];
             public List<Segment> Segments = new();
             public List<double[]> Samples = new();
             public List<double[]> FirstSamples = new();
@@ -31,10 +31,10 @@ namespace SmallProject.Devices.Arm.Kinematic
             double[] motorScale, bool repeat, double toleranceMm = 1.0,
             double maxVelocity = 4.2, double maxAcceleration = 6.25, int[]? jointIndices = null)
         {
-            var axes=jointIndices ?? new[] {0,1,2,3,4};
+            var axes=jointIndices ?? new[] {0,1,2,3,4,5};
             int axisCount=axes.Length;
-            if (axisCount==0 || axisCount>5 || axes.Distinct().Count()!=axisCount || axes.Any(i=>i<0 || i>=5))
-                throw new ArgumentException("物理轴只能选J1～J5，且不能重复");
+            if (axisCount==0 || axisCount>6 || axes.Distinct().Count()!=axisCount || axes.Any(i=>i<0 || i>=6))
+                throw new ArgumentException("物理轴只能选J1～J6，且不能重复");
             if (targets.Count == 0 || targets.Count > 32 || initialSeconds.Count != targets.Count ||
                 motorScale.Length != axisCount || motorScale.Any(v => !double.IsFinite(v) || Math.Abs(v) < .001) ||
                 !double.IsFinite(toleranceMm) || toleranceMm <= 0 || !double.IsFinite(maxVelocity) ||
@@ -44,7 +44,7 @@ namespace SmallProject.Devices.Arm.Kinematic
             q.AddRange(targets.Select(v => v.ToArray()));
             if (q.Any(v => !model.WithinLimits(v))) throw new ArgumentException("路径角度超出 URDF 范围");
             if (q.Any(v => Enumerable.Range(0, 6).Any(i => !axes.Contains(i) && Math.Abs(v[i]-start[i]) > 1e-8)))
-                throw new ArgumentException("路径包含未参与的关节或虚拟J6运动");
+                throw new ArgumentException("路径包含未参与的关节运动");
             if (repeat && q[^1].Zip(start).Any(p => Math.Abs(p.First-p.Second) > 1e-6))
                 throw new ArgumentException("循环路径终点必须回到起点");
             if (repeat) q[^1] = start.ToArray();

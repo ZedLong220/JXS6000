@@ -34,11 +34,32 @@ namespace SmallProject.WindowController
             m.bt_MoveLoop.Click += Bt_MoveLoop_Click;
             m.bt_MoveLoopStop.Click += Bt_MoveLoopStop_Click;
             m.bt_MoveFivePath.Click += Bt_MoveFivePath_Click;
+            m.bt_ClawApply.Click += async (_,_) => await SendGripperAsync((float)m.pg_ClawAngle.Value);
+            m.bt_ClawHome.Click += async (_,_) => await SendGripperAsync(0);
+            m.bt_ClawFull.Click += async (_,_) => await SendGripperAsync(180);
+            m.bt_ClawStop.Click += async (_,_) => await SendGripperCommandAsync(0x56,Array.Empty<byte>());
+            m.bt_ClawLoopStart.Click += async (_,_) => await SendGripperCommandAsync(0x57,Array.Empty<byte>());
+            m.pg_ClawAngle.ValueChanged += (_,_) => m.tb_ClawAngle.Text=$"{m.pg_ClawAngle.Value:F0}°";
+            App.Core.Serial.GripperStatusReceived += (angle,pulse,enabled) => m.Dispatcher.BeginInvoke(new Action(() =>
+                m.tb_GripperStatus.Text=$"PWM：{(enabled?"已启用":"已关闭")}；指令角度 {angle:F1}°，脉宽 {pulse}µs（无位置反馈）"));
             App.Core.Jyker.PathValidator = samples => M.JykerPreviewContrl.ValidatePathAsync(samples);
             m.dg_JointRecord.ItemsSource = App.Core.JointRecords;
         }
 
         //连接语音助手
+        private Task SendGripperAsync(float angle) => SendGripperCommandAsync(0x55,BitConverter.GetBytes(angle));
+
+        private async Task SendGripperCommandAsync(int command,byte[] data)
+        {
+            if(!App.Core.Serial.IsOpen) { JLog.Info("请先打开连接。"); return; }
+            try {
+                var frame=SmallProject.Serials.Slcan.SlcanParser.ParseSlcanFrameStr(0,command,data);
+                if(!await App.Core.Serial.SendBatchAndWaitForAckAsync(new[]{frame}))
+                    JLog.Info("夹爪指令未获主控确认，请检查连接与主控固件。");
+            }
+            catch(Exception ex) { JLog.Error(ex); }
+        }
+
         private void Bt_ConnectAi_Click(object sender, System.Windows.RoutedEventArgs e)
         {
             //AiAssistant aiAssistant = new AiAssistant();
@@ -83,7 +104,7 @@ namespace SmallProject.WindowController
                 double[]? joints = await App.Core.Jyker.ReadCurrentModelJointsAsync();
                 if (joints == null)
                 {
-                    JLog.Info("记录点位失败：未收到J1～J5全部五个编码器的新反馈。");
+                    JLog.Info("记录点位失败：未收到J1～J6全部六个编码器的新反馈。");
                     return;
                 }
 
@@ -116,7 +137,7 @@ namespace SmallProject.WindowController
                 M.dg_JointRecord.SelectedItem = record;
                 M.dg_JointRecord.ScrollIntoView(record);
                 M.JykerKinematicContrl.ApplyModelJoints(joints);
-                JLog.Info($"已记录五轴点位：{string.Join(", ",joints.Take(5).Select((v,i)=>$"J{i+1}={v:F3}°"))}。");
+                JLog.Info($"已记录六轴点位：{string.Join(", ",joints.Take(6).Select((v,i)=>$"J{i+1}={v:F3}°"))}。");
             }
             catch (Exception ex)
             {
@@ -293,7 +314,7 @@ namespace SmallProject.WindowController
         {
             if (loopRunning || !App.Core.Serial.IsOpen) return;
             var records=App.Core.JointRecords.ToArray();
-            if (records.Length<2) { JLog.Info("请先记录至少两个五轴点位。"); return; }
+            if (records.Length<2) { JLog.Info("请先记录至少两个六轴点位。"); return; }
             bool repeat=M.cb_RepeatFivePath.IsChecked==true;
             loopRunning=true; loopCancellation=new CancellationTokenSource();
             var token=loopCancellation.Token;
@@ -303,26 +324,23 @@ namespace SmallProject.WindowController
             try
             {
                 var current=await App.Core.Jyker.ReadCurrentModelJointsAsync();
-                if(current==null) { JLog.Info("五轴路径停止：节点1～5编码器反馈不完整。"); return; }
+                if(current==null) { JLog.Info("六轴路径停止：节点1～6编码器反馈不完整。"); return; }
                 var targets=records.Select(r=>new[]{r.J1,r.J2,r.J3,r.J4,r.J5,r.J6}).ToList();
-                if(targets.Any(q=>Math.Abs(q[5])>1e-8)) {
-                    JLog.Info("旧记录含虚拟J6运动，请重新记录五轴点位，J6必须为0°。"); return;
-                }
                 if(repeat) targets.Add(current.ToArray());
                 long version=App.Core.Serial.ControllerStatusVersion;
                 long completion=App.Core.Serial.ControllerCompletionCount;
                 if(!await App.Core.Jyker.QueueContinuousPathAsync(targets.Select(JointCoordinateMap.ToLegacy).ToArray(),
                     samples=>M.JykerPreviewContrl.ValidatePathAsync(samples,token),repeat,token)) {
-                    JLog.Info("五轴路径未启动：请查看规划、碰撞检查或逐帧确认日志。"); return;
+                    JLog.Info("六轴路径未启动：请查看规划、碰撞检查或逐帧确认日志。"); return;
                 }
-                JLog.Info($"五轴点位路径已提交：按表格顺序执行{records.Length}个点位"+
+                JLog.Info($"六轴点位路径已提交：按表格顺序执行{records.Length}个点位"+
                     (repeat?"，回到本次起点后重复，点击停止路径结束。":"，最终点停车并等待全部编码器确认。"));
                 if(!await WaitForMovementCompletionAsync(version,completion,token,repeat)) return;
                 var actual=await App.Core.Jyker.ReadCurrentModelJointsAsync();
                 if(actual!=null) M.JykerKinematicContrl.ApplyModelJoints(actual);
-                JLog.Info("五轴路径完成：所有参与轴已通过最终编码器到位检查。");
+                JLog.Info("六轴路径完成：所有参与轴已通过最终编码器到位检查。");
             }
-            catch(OperationCanceledException) { JLog.Info("五轴路径已停止。"); }
+            catch(OperationCanceledException) { JLog.Info("六轴路径已停止。"); }
             catch(Exception ex) { App.Core.Jyker.StopNow(); JLog.Error(ex); }
             finally
             {

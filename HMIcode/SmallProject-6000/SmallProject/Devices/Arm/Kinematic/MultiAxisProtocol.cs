@@ -18,18 +18,18 @@ namespace SmallProject.Devices.Arm.Kinematic
 
         public static List<Command> Encode(ContinuousPathPlanner.Plan plan,int[] axes,bool repeat)
         {
-            if (axes.Length<1 || axes.Length>5 || axes.Distinct().Count()!=axes.Length || axes.Any(i=>i<0 || i>4) ||
+            if (axes.Length<1 || axes.Length>6 || axes.Distinct().Count()!=axes.Length || axes.Any(i=>i<0 || i>5) ||
                 plan.Start.Length!=axes.Length || plan.Segments.Count<1 || plan.Segments.Count>32)
-                throw new ArgumentException("五轴路径协议参数无效");
+                throw new ArgumentException("六轴路径协议参数无效");
             byte mask=(byte)axes.Sum(i=>1<<i);
-            var commands=new List<Command> { new() {Code=0x50,Data=new byte[]{3,mask}} };
+            var commands=new List<Command> { new() {Code=0x50,Data=new byte[]{4,mask}} };
             for(int i=0;i<axes.Length;++i)
                 commands.Add(new() {Code=0x51,Data=new[]{(byte)(axes[i]+1)}.Concat(Float(plan.Start[i])).ToArray()});
             for(int seq=0;seq<plan.Segments.Count;++seq)
             {
                 var segment=plan.Segments[seq];
                 if(segment.End.Length!=axes.Length || segment.EndVelocity.Length!=axes.Length)
-                    throw new ArgumentException("五轴段数据不完整");
+                    throw new ArgumentException("六轴段数据不完整");
                 commands.Add(new() {Code=0x52,Data=Float(segment.Duration).Concat(new[]{(byte)seq,(byte)(seq>>8)}).ToArray()});
                 for(int i=0;i<axes.Length;++i) for(int kind=0;kind<=1;++kind)
                     commands.Add(new() {Code=0x53,Data=new[]{(byte)(axes[i]+1),(byte)kind,(byte)seq,(byte)(seq>>8)}

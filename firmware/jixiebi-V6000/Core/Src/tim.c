@@ -19,6 +19,7 @@
 
 /* Includes ------------------------------------------------------------------*/
 #include "tim.h"
+#include "gripper_servo.h"
 
 /* USER CODE BEGIN 0 */
 
@@ -36,6 +37,7 @@ void MX_TIM2_Init(void)
 
   TIM_ClockConfigTypeDef sClockSourceConfig = {0};
   TIM_MasterConfigTypeDef sMasterConfig = {0};
+  TIM_OC_InitTypeDef pwm = {0};
 
   /* USER CODE BEGIN TIM2_Init 1 */
 
@@ -43,7 +45,7 @@ void MX_TIM2_Init(void)
   htim2.Instance = TIM2;
   htim2.Init.Prescaler = 83;
   htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim2.Init.Period = 999;
+  htim2.Init.Period = 19999; /* 84 MHz / 84 / 20000 = 50 Hz */
   htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
   if (HAL_TIM_Base_Init(&htim2) != HAL_OK)
@@ -55,6 +57,12 @@ void MX_TIM2_Init(void)
   {
     Error_Handler();
   }
+  if (HAL_TIM_PWM_Init(&htim2) != HAL_OK) Error_Handler();
+  pwm.OCMode = TIM_OCMODE_PWM1;
+  pwm.Pulse = 0U; /* No servo pulses until an explicit angle command. */
+  pwm.OCPolarity = TIM_OCPOLARITY_HIGH;
+  pwm.OCFastMode = TIM_OCFAST_DISABLE;
+  if (HAL_TIM_PWM_ConfigChannel(&htim2,&pwm,TIM_CHANNEL_1) != HAL_OK) Error_Handler();
   sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
   sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
   if (HAL_TIMEx_MasterConfigSynchronization(&htim2, &sMasterConfig) != HAL_OK)
@@ -79,8 +87,7 @@ void HAL_TIM_Base_MspInit(TIM_HandleTypeDef* tim_baseHandle)
     __HAL_RCC_TIM2_CLK_ENABLE();
 
     /* TIM2 interrupt Init */
-    HAL_NVIC_SetPriority(TIM2_IRQn, 0, 0);
-    HAL_NVIC_EnableIRQ(TIM2_IRQn);
+    /* Hardware PWM needs no timer interrupt; HAL ticks still use SysTick. */
   /* USER CODE BEGIN TIM2_MspInit 1 */
 
   /* USER CODE END TIM2_MspInit 1 */
@@ -107,6 +114,31 @@ void HAL_TIM_Base_MspDeInit(TIM_HandleTypeDef* tim_baseHandle)
 }
 
 /* USER CODE BEGIN 1 */
+static uint8_t servoPwmRunning;
+
+void GripperHardware_Init(void)
+{
+    GPIO_InitTypeDef pin = {0};
+    MX_TIM2_Init();
+    __HAL_RCC_GPIOA_CLK_ENABLE();
+    pin.Pin=GPIO_PIN_0;
+    pin.Mode=GPIO_MODE_AF_PP;
+    pin.Pull=GPIO_PULLDOWN;
+    pin.Speed=GPIO_SPEED_FREQ_LOW;
+    pin.Alternate=GPIO_AF1_TIM2;
+    HAL_GPIO_Init(GPIOA,&pin);
+    servoPwmRunning=0U;
+}
+
+int GripperHardware_WritePulse(uint16_t microseconds)
+{
+    __HAL_TIM_SET_COMPARE(&htim2,TIM_CHANNEL_1,microseconds);
+    if (!servoPwmRunning) {
+        if (HAL_TIM_PWM_Start(&htim2,TIM_CHANNEL_1)!=HAL_OK) return -1;
+        servoPwmRunning=1U;
+    }
+    return 0;
+}
 
 /* USER CODE END 1 */
 

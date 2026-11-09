@@ -21,7 +21,7 @@ const JOINT_LABELS = [
   'J3 肘部俯仰',
   'J4 腕部俯仰',
   'J5 腕部摆转',
-  'J6 虚拟固定',
+  'J6 法兰旋转',
 ];
 
 export function setAppStatus(state, text) {
@@ -86,7 +86,6 @@ export function setupRobotControls(robot) {
     input.max = MathUtils.radToDeg(upper).toFixed(2);
     input.step = '0.1';
     input.value = MathUtils.radToDeg(jointValue(joint)).toFixed(2);
-    input.disabled = index >= 5;
     input.setAttribute('aria-label', label.textContent);
     input.addEventListener('input', () => {
       const radians = MathUtils.degToRad(Number(input.value));
@@ -95,7 +94,7 @@ export function setupRobotControls(robot) {
 
     const keys = document.createElement('div');
     keys.className = 'joint-row__keys';
-    keys.textContent = index >= 5 ? '固定 0°' : `${KEY_BINDINGS[index]?.[0] || ''} / ${KEY_BINDINGS[index]?.[1]?.toUpperCase() || ''}`;
+    keys.textContent = `${KEY_BINDINGS[index]?.[0] || ''} / ${KEY_BINDINGS[index]?.[1]?.toUpperCase() || ''}`;
 
     row.append(top, input, keys);
     controlsRoot.appendChild(row);
@@ -208,7 +207,7 @@ export function setupRobotControls(robot) {
 
   const update = () => {
     KEY_BINDINGS.forEach((keys, index) => {
-      if (!jointNames[index] || index >= 5) return;
+      if (!jointNames[index]) return;
       const direction = (keyState.has(keys[1]) ? 1 : 0) - (keyState.has(keys[0]) ? 1 : 0);
       if (!direction) return;
       const name = jointNames[index];
@@ -220,7 +219,7 @@ export function setupRobotControls(robot) {
   // A native FK result changes only the preview. Actual motor commands are
   // separately checked by validateMotion/validatePath before transmission.
   update.setJointValues = angles => {
-    if (!Array.isArray(angles) || angles.length !== jointNames.length || Math.abs(angles[5]) > 1e-8 ||
+    if (!Array.isArray(angles) || angles.length !== jointNames.length ||
       angles.some((v,i) => !Number.isFinite(v) || MathUtils.degToRad(v) < limitsFor(robot.joints[jointNames[i]])[0]-1e-8 ||
         MathUtils.degToRad(v) > limitsFor(robot.joints[jointNames[i]])[1]+1e-8)) return false;
     jointNames.forEach((name,i)=>robot.joints[name].setJointValue(MathUtils.degToRad(angles[i])));

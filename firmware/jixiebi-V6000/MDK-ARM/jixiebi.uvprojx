@@ -662,6 +662,11 @@
               <FilePath>..\USER\Src\arm_controller.c</FilePath>
             </File>
             <File>
+              <FileName>gripper_servo.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\USER\Src\gripper_servo.c</FilePath>
+            </File>
+            <File>
               <FileName>serial_cmd.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\USER\Src\serial_cmd.c</FilePath>

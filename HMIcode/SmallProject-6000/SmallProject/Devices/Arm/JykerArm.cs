@@ -49,11 +49,10 @@ namespace SmallProject.Devices.Arm
             preparePose6D = new Pose6D_t();
             prepareJoints = Joint6D_t.defult;
             currentJoints = Joint6D_t.defult;
-            for(int i=0;i<5;++i) {
+            for(int i=0;i<6;++i) {
                 motorJ[i].AngleLimitMin=dof6Solver.Model.LowerDegrees[i]+Joint6D_t.defult.a[i];
                 motorJ[i].AngleLimitMax=dof6Solver.Model.UpperDegrees[i]+Joint6D_t.defult.a[i];
             }
-            motorJ[5].AngleLimitMin=motorJ[5].AngleLimitMax=Joint6D_t.defult.a[5];
         }
 
         public void LoopStatus()
@@ -63,7 +62,7 @@ namespace SmallProject.Devices.Arm
             long previous = Interlocked.Read(ref lastCurrentQuery);
             if (now - previous < 500 ||
                 Interlocked.CompareExchange(ref lastCurrentQuery, now, previous) != previous) return;
-            for (int i = 0; i < 5; i++) GetStatus(i + 1);
+            for (int i = 0; i < 6; i++) GetStatus(i + 1);
         }
 
         public void GetStatus(int Id)
@@ -108,7 +107,7 @@ namespace SmallProject.Devices.Arm
 
             long[] versions;
             lock (positionLock) versions=positionVersions.ToArray();
-            for (int i=0;i<5;++i)
+            for (int i=0;i<6;++i)
                 App.Core.Serial.PushDataToQueue(SlcanParser.ParseSlcanQueryFrameStr(i+1,0x23));
 
             var stopwatch = Stopwatch.StartNew();
@@ -116,11 +115,10 @@ namespace SmallProject.Devices.Arm
             {
                 lock (positionLock)
                 {
-                    if (Enumerable.Range(0,5).All(i=>positionVersions[i]>versions[i]))
+                    if (Enumerable.Range(0,6).All(i=>positionVersions[i]>versions[i]))
                     {
                         double[] joints = JointCoordinateMap.ToModel(currentJoints.a);
-                        for(int i=0;i<5;++i) joints[i]=motorJ[i].Angle;
-                        joints[5]=0;
+                        for(int i=0;i<6;++i) joints[i]=motorJ[i].Angle;
                         currentJoints=new Joint6D_t(JointCoordinateMap.ToLegacy(joints));
                         return joints;
                     }
@@ -130,7 +128,7 @@ namespace SmallProject.Devices.Arm
             return null;
         }
 
-        // Older UI/voice entry points use the same checked five-axis path.
+        // Older UI/voice entry points use the same checked six-axis path.
         public Func<IReadOnlyList<double[]>, Task<(bool ok, string reason)>>? PathValidator { get; set; }
         public async void Move(double[] angles)
         {
@@ -149,7 +147,7 @@ namespace SmallProject.Devices.Arm
             var speed = App.JConfig.Speed;
             if(!float.IsFinite(speed) || speed<=0) throw new ArgumentException("速度必须大于0");
             double time = from.Zip(to, (a, b) => Math.Abs(b - a)).Max() / speed;
-            for (int i = 0; i < 5; i++)
+            for (int i = 0; i < 6; i++)
             {
                 double distanceRev = Math.Abs(to[i] - from[i]) * motorJ[i].Reduction / 360.0;
                 double acceleration = ClosedLoopDriverAccelerationRevolutionsPerSecondSquared;
@@ -179,8 +177,8 @@ namespace SmallProject.Devices.Arm
             if (!await pathUpload.WaitAsync(0,cancellationToken)) return false;
             try
             {
-            int[] axes=jointIndices ?? new[]{0,1,2,3,4};
-            if(axes.Length==0 || axes.Length>5 || axes.Distinct().Count()!=axes.Length || axes.Any(i=>i<0 || i>=5)) return false;
+            int[] axes=jointIndices ?? new[]{0,1,2,3,4,5};
+            if(axes.Length==0 || axes.Length>6 || axes.Distinct().Count()!=axes.Length || axes.Any(i=>i<0 || i>=6)) return false;
             if (!App.Core.Serial.IsOpen || legacyTargets.Count == 0 ||
                 legacyTargets.Count > MaximumContinuousPathPoints)
                 return false;
@@ -189,7 +187,7 @@ namespace SmallProject.Devices.Arm
                 return false;
 
             double[]? start = await ReadCurrentModelJointsAsync();
-            if (start == null) { JLog.Info("路径启动失败：J1～J5编码器新反馈不完整，请检查节点1～5。"); return false; }
+            if (start == null) { JLog.Info("路径启动失败：J1～J6编码器新反馈不完整，请检查节点1～6。"); return false; }
             var times = new List<double>();
             double[] previous = JointCoordinateMap.ToLegacy(start);
             foreach (var target in legacyTargets) { times.Add(CalculateMoveTime(previous,target)); previous=target; }

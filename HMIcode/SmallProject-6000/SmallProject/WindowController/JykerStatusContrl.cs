@@ -58,7 +58,7 @@ namespace SmallProject.WindowController
                 try
                 {
                     if (!monitoring) return;
-                    for (int i = 0; i < 5; i++)
+                    for (int i = 0; i < 6; i++)
                     {
                         double milliamps = App.Core.Jyker.motorJ[i].Current * 1000;
                         if (M.FindName($"pb_pJ{i + 1}") is ProgressBar pb) pb.Value = milliamps;

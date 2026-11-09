@@ -115,7 +115,7 @@ File.WriteAllText(Path.Combine(AppContext.BaseDirectory,"continuous-samples.json
 var fiveScale=new[]{30.0/360,-150.0/360,150.0/360,-100.0/360,100.0/360};
 var fiveTargets=new[]{new double[]{.5,-.5,.5,.5,.5,0},new double[]{-.5,-.5,-.5,-.5,-.5,0},
     new double[]{.75,-.75,-.5,-.25,.25,0},new double[6]};
-var five=ContinuousPathPlanner.Build(model,new double[6],fiveTargets,new[]{1.0,1.0,1.0,1.0},fiveScale,false);
+var five=ContinuousPathPlanner.Build(model,new double[6],fiveTargets,new[]{1.0,1.0,1.0,1.0},fiveScale,false,jointIndices:new[]{0,1,2,3,4});
 Check(five.Start.Length==5 && five.Segments.All(s=>s.End.Length==5 && s.EndVelocity.Length==5),"Five axes, one shared segment clock");
 Check(five.MaximumDeviationMm<=.9,"Five-axis curve retains conservative 1 mm geometric tolerance");
 Check(five.Samples.All(q=>q[5]==0),"Virtual J6 remains fixed throughout the actual curve");
@@ -126,13 +126,13 @@ for(int i=1;i<five.Segments.Count;++i)for(int j=0;j<5;++j)
     Check(Math.Abs(5*(a.Controls[5][j]-a.Controls[4][j])/a.Duration-5*(b.Controls[1][j]-b.Controls[0][j])/b.Duration)<1e-6,"All five knot velocities continuous");
 }
 rejected=false;
-try{ContinuousPathPlanner.Build(model,new double[6],new[]{new double[]{0,0,0,0,0,1}},new[]{1.0},fiveScale,false);}
+try{ContinuousPathPlanner.Build(model,new double[6],new[]{new double[]{0,0,0,0,0,1}},new[]{1.0},fiveScale,false,jointIndices:new[]{0,1,2,3,4});}
 catch(ArgumentException){rejected=true;}
-Check(rejected,"Virtual sixth-axis commands cannot be silently discarded");
+Check(rejected,"An excluded sixth-axis command cannot be silently discarded");
 var host=MultiAxisProtocol.Encode(five,new[]{0,1,2,3,4},false);
-Check(host[0].Code==0x50 && host[0].Data.SequenceEqual(new byte[]{3,31}),"Protocol 3 explicitly includes all nodes 1..5");
+Check(host[0].Code==0x50 && host[0].Data.SequenceEqual(new byte[]{4,31}),"Protocol 4 can explicitly select nodes 1..5");
 Check(host.All(c=>c.Data.Length<=8),"Every five-axis command fits classic CAN");
-Check(host.Where(c=>c.Code==0x53).All(c=>c.Data[0]>=1 && c.Data[0]<=5),"No commands sent for virtual node 6");
+Check(host.Where(c=>c.Code==0x53).All(c=>c.Data[0]>=1 && c.Data[0]<=5),"Five-axis subset omits node 6");
 Check(host.Count(c=>c.Code==0x53)==five.Segments.Count*10,"Every block includes every axis target and exit velocity");
 Check(host.Count(c=>c.Code==0x54)==five.Segments.Count,"Each block has a distinct commit");
 var fixedProtocol=MultiAxisProtocol.Encode(continuous,new[]{1,2},false);
@@ -147,4 +147,34 @@ using(var wire=new StreamWriter(Path.Combine(AppContext.BaseDirectory,"five-axis
 var fixedLower=model.LowerDegrees.ToArray(); var fixedUpper=model.UpperDegrees.ToArray(); fixedLower[5]=fixedUpper[5]=0;
 var fivePose=model.Forward(new[]{10.0,-20,30,-10,15,0});
 Check(model.TryInverse(fivePose,new double[6],out var fiveAnswer,fixedLower,fixedUpper) && Math.Abs(fiveAnswer[5])<1e-8,"Five-axis IK never depends on the virtual sixth axis");
-Console.WriteLine($"PASS: {passed} kinematics/planning/protocol checks; five-axis geometric bound {five.MaximumDeviationMm:F4} mm; fixture: five-axis-host.txt");
+var sixScale=new[]{30.0/360,-150.0/360,150.0/360,-100.0/360,100.0/360,1.0/360};
+var sixTargets=new[]{new double[]{.5,-.5,.5,.5,.5,30},new double[]{-.5,-.5,-.5,-.5,-.5,-45},
+    new double[]{.75,-.75,-.5,-.25,.25,60},new double[6]};
+var six=ContinuousPathPlanner.Build(model,new double[6],sixTargets,new[]{1.0,1.0,1.0,1.0},sixScale,false);
+Check(six.Start.Length==6 && six.Segments.All(s=>s.End.Length==6 && s.EndVelocity.Length==6),"Six motor axes use the shared segment clock");
+Check(six.Samples.Any(q=>q[5]>20) && six.Samples.Any(q=>q[5]<-20),"Real J6 travels in both directions");
+Check(six.MaximumDeviationMm<=.9,"Six-axis geometric tolerance");
+for(int i=1;i<six.Segments.Count;++i)for(int j=0;j<6;++j) {
+    var a=six.Segments[i-1];var b=six.Segments[i];
+    Check(Math.Abs(a.Controls[5][j]-b.Controls[0][j])<1e-8,"Six-axis position continuity");
+    // Drives execute durations rounded to whole milliseconds, not raw floats.
+    double ta=Math.Round((double)(a.Duration*1000f),MidpointRounding.AwayFromZero)/1000;
+    double tb=Math.Round((double)(b.Duration*1000f),MidpointRounding.AwayFromZero)/1000;
+    Check(Math.Abs(5*(a.Controls[5][j]-a.Controls[4][j])/ta-5*(b.Controls[1][j]-b.Controls[0][j])/tb)<1e-8,"Six-axis velocity continuity");
+}
+foreach(double angle in new[]{-180.0,180.0}) {
+    var q=new double[]{0,0,0,0,0,angle};
+    Check(ContinuousPathPlanner.Build(model,new double[6],new[]{q},new[]{2.0},sixScale,false).Segments.Count==1,"J6 endpoint is reachable");
+}
+rejected=false;
+try { ContinuousPathPlanner.Build(model,new double[6],new[]{new double[]{0,0,0,0,0,180.1}},new[]{2.0},sixScale,false); }
+catch(ArgumentException) {rejected=true;}
+Check(rejected,"J6 outside -180..180 is rejected");
+var sixHost=MultiAxisProtocol.Encode(six,new[]{0,1,2,3,4,5},false);
+Check(sixHost[0].Data.SequenceEqual(new byte[]{4,63}),"Protocol 4 selects all six axes");
+Check(sixHost.Count(c=>c.Code==0x53)==six.Segments.Count*12,"All six targets and velocities are encoded");
+Check(sixHost.Where(c=>c.Code==0x53).Any(c=>c.Data[0]==6),"Node6 receives its own target");
+Check(sixHost.All(c=>c.Data.Length<=8),"Six-axis frames fit classic CAN");
+File.WriteAllLines(Path.Combine(AppContext.BaseDirectory,"six-axis-host.txt"),sixHost.Select(c=>$"{c.Code:X2} {Convert.ToHexString(c.Data)}"));
+File.WriteAllText(Path.Combine(AppContext.BaseDirectory,"six-axis-samples.json"),System.Text.Json.JsonSerializer.Serialize(six.Samples));
+Console.WriteLine($"PASS: {passed} kinematics/planning/protocol checks; six-axis geometric bound {six.MaximumDeviationMm:F4} mm; fixture: six-axis-host.txt");

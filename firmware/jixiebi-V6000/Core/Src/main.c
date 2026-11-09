@@ -6,6 +6,7 @@
 #include "arm_controller.h"
 #include "serial_cmd.h"
 #include "host_bridge.h"
+#include "gripper_servo.h"
 #include <stdio.h>
 
 void SystemClock_Config(void);
@@ -21,16 +22,17 @@ int main(void)
     MX_CAN1_Init();
     MX_USART1_UART_Init();
     MX_USART2_UART_Init();
+    Gripper_Init();
 
     CAN_Proto_Init();
     Arm_Init();
     SerialCmd_Init();
 
     printf("\r\n=== JXS6000 CAN42 Controller ===\r\n");
-    printf("J2/J3: closed-loop CAN drives, local encoder feedback\r\n");
+    printf("J1..J6: CAN closed-loop drives; PA0: gripper PWM\r\n");
     printf("42 steppers + user-firmware-keil-57: no brake, no STEP/DIR\r\n");
     printf("Commands: move:j2_rev,j3_rev,time_s | status | zero | stop\r\n");
-    printf("SLCAN HMI: 0x06 one-shot, 0x08+0x66 buffered path, 0x3A control\r\n");
+    printf("SLCAN HMI: v4 path 0x50..0x54; gripper 0x55..0x57\r\n");
 
     while (1) {
         Arm_Update();

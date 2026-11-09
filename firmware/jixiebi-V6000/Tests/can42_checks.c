@@ -1,6 +1,7 @@
 #include "can_protocol.h"
 #include "serial_cmd.h"
 #include "host_bridge.h"
+#include "gripper_servo.h"
 #include <assert.h>
 #include <math.h>
 #include <stdio.h>
@@ -15,6 +16,14 @@ static uint32_t now;
 static Frame sent[32768];
 static unsigned count, checks;
 static int failId = -1;
+static uint16_t servoPulse;
+static int failServo;
+void GripperHardware_Init(void) { servoPulse=0U; failServo=0; }
+int GripperHardware_WritePulse(uint16_t pulse)
+{
+    if (failServo) return -1;
+    servoPulse=pulse; return 0;
+}
 static char uartText[8192];
 static size_t uartLength;
 #define CHECK(x) do { ++checks; if (!(x)) { fprintf(stderr,"FAIL %d: %s\n",__LINE__,#x); exit(2); } } while (0)
@@ -51,7 +60,7 @@ void Error_Handler(void){abort();}
 static void reset(void)
 {
     now=100; count=uartLength=0; failId=-1;
-    CAN_DualAxisInit(); SerialCmd_Init();
+    CAN_DualAxisInit(); SerialCmd_Init(); Gripper_Init();
 }
 static unsigned occurrences(uint16_t id)
 {
@@ -204,7 +213,7 @@ static void transport(void)
 }
 static void spline_status(uint8_t node,uint8_t st,uint8_t loaded,uint16_t session,uint8_t error)
 {
-    uint8_t data[8]={3,st,loaded,0,error,5,(uint8_t)session,(uint8_t)(session>>8)};
+    uint8_t data[8]={4,st,loaded,0,error,5,(uint8_t)session,(uint8_t)(session>>8)};
     rx((uint16_t)((node<<7)|0x3C),data,8);
 }
 static uint16_t reset_session(void)
@@ -248,7 +257,7 @@ static void continuous_path(void)
     spline_status(2,1,2,session,0); CAN_DualAxisUpdate(); CHECK(occurrences(0x66)==0);
     spline_status(3,1,2,session,0); CAN_DualAxisUpdate();
     CHECK(CAN_DualAxisGetState()==DUAL_AXIS_RUNNING && occurrences(0x66)==1);
-    CHECK(last(0x66)->len==8 && last(0x66)->data[2]==3 && last(0x66)->data[3]==6 && last(0x66)->data[4]==2);
+    CHECK(last(0x66)->len==8 && last(0x66)->data[2]==4 && last(0x66)->data[3]==6 && last(0x66)->data[4]==2);
     unsigned commits=occurrences(0x10C);
     now+=2000; positions(1,-1,0); spline_status(2,2,2,session,0); spline_status(3,2,2,session,0); CAN_DualAxisUpdate();
     CHECK(CAN_DualAxisIsActive() && occurrences(0x10C)==commits && occurrences(0x66)==1);
@@ -265,9 +274,9 @@ static void continuous_path(void)
 }
 static void five_host_start(uint8_t mask)
 {
-    uint8_t begin[2]={3,mask}; control(0x50,begin,2);
+    uint8_t begin[2]={4,mask}; control(0x50,begin,2);
     CHECK(last(0x3B)->data[6]==1);
-    for(uint8_t node=1;node<=5;++node)if(mask&(1U<<(node-1))) {
+    for(uint8_t node=1;node<=6;++node)if(mask&(1U<<(node-1))) {
         uint8_t p[5]={node,0,0,0,0}; control(0x51,p,5); CHECK(last(0x3B)->data[6]==1);
     }
 }
@@ -275,7 +284,7 @@ static void five_stage(uint16_t seq,uint8_t mask,float duration,uint8_t missing)
 {
     uint8_t d[8]={0}; memcpy(d,&duration,4); d[4]=(uint8_t)seq; d[5]=(uint8_t)(seq>>8);
     control(0x52,d,6); CHECK(last(0x3B)->data[6]==1);
-    for(uint8_t node=1;node<=5;++node)if(mask&(1U<<(node-1)))for(uint8_t kind=0;kind<=1;++kind) {
+    for(uint8_t node=1;node<=6;++node)if(mask&(1U<<(node-1)))for(uint8_t kind=0;kind<=1;++kind) {
         float value=kind?0.0f:(float)node/10.0f;
         if(node==missing)continue;
         d[0]=node; d[1]=kind; d[2]=(uint8_t)seq; d[3]=(uint8_t)(seq>>8); memcpy(d+4,&value,4);
@@ -285,35 +294,62 @@ static void five_stage(uint16_t seq,uint8_t mask,float duration,uint8_t missing)
 static void five_axis_protocol(void)
 {
     uint8_t d[8]={0},action=1;
-    reset(); d[0]=3; d[1]=0x3F; control(0x50,d,2); CHECK(last(0x3B)->data[6]==0);
+    reset(); d[0]=4; d[1]=0x7F; control(0x50,d,2); CHECK(last(0x3B)->data[6]==0);
     d[0]=d[1]=0;
-    five_host_start(31);
-    five_stage(0,31,1.0f,5); control(0x54,d,2);
+    five_host_start(63);
+    five_stage(0,63,1.0f,6); control(0x54,d,2);
     CHECK(last(0x3B)->data[6]==0 && CAN_TrajectoryCount()==0);
-    five_stage(0,31,1.0f,0); now+=1500; control(0x54,d,2);
+    five_stage(0,63,1.0f,0); now+=1500; control(0x54,d,2);
     CHECK(last(0x3B)->data[6]==0 && CAN_TrajectoryCount()==0);
-    five_stage(0,31,1.0f,0); d[0]=1; control(0x54,d,2);
+    five_stage(0,63,1.0f,0); d[0]=1; control(0x54,d,2);
     CHECK(last(0x3B)->data[6]==0 && CAN_TrajectoryCount()==0); d[0]=0;
-    five_stage(0,31,1.0f,0); control(0x3A,&action,1);
+    five_stage(0,63,1.0f,0); control(0x3A,&action,1);
     CHECK(last(0x3B)->data[6]==0 && !CAN_DualAxisIsActive()); /* uncommitted block cannot start */
     control(0x54,d,2); CHECK(CAN_TrajectoryCount()==1);
-    for(uint8_t node=1;node<=4;++node)position(node,0,1);
+    for(uint8_t node=1;node<=5;++node)position(node,0,1);
     CAN_DualAxisUpdate(); control(0x3A,&action,1);
-    now+=1501; for(uint8_t node=1;node<=4;++node)position(node,0,1); CAN_DualAxisUpdate();
+    now+=1501; for(uint8_t node=1;node<=5;++node)position(node,0,1); CAN_DualAxisUpdate();
     CHECK(CAN_DualAxisGetState()==DUAL_AXIS_FAULT && occurrences(0x66)==0);
-    for(uint8_t node=1;node<=5;++node)CHECK(occurrences((uint16_t)((node<<7)|9))>0);
-    reset(); five_host_start(31);
-    for(unsigned i=0;i<32;++i) { five_stage((uint16_t)i,31,1.0f,0); d[0]=(uint8_t)i; control(0x54,d,2); CHECK(CAN_TrajectoryCount()==i+1); }
+    for(uint8_t node=1;node<=6;++node)CHECK(occurrences((uint16_t)((node<<7)|9))>0);
+    reset(); five_host_start(63);
+    for(unsigned i=0;i<32;++i) { five_stage((uint16_t)i,63,1.0f,0); d[0]=(uint8_t)i; control(0x54,d,2); CHECK(CAN_TrajectoryCount()==i+1); }
     CHECK(CAN_MultiStage(32,1.0f)!=0);
     CAN_DualAxisSetZero();
-    for(uint8_t node=1;node<=5;++node)CHECK(occurrences((uint16_t)((node<<7)|0x15))==1);
-    for(unsigned i=0;i<count;++i)CHECK((sent[i].id>>7)!=6);
+    for(uint8_t node=1;node<=6;++node)CHECK(occurrences((uint16_t)((node<<7)|0x15))==1);
+    for(unsigned i=0;i<count;++i)CHECK((sent[i].id>>7)!=7);
 }
+static void gripper_commands(void)
+{
+    float angle;
+    uint8_t bytes[8];
+    reset(); Gripper_GetStatus(bytes);
+    CHECK(servoPulse==0 && bytes[6]==0 && bytes[7]==1);
+    for(unsigned i=0;i<3;++i) {
+        angle=(float)i*90.0f;memcpy(bytes,&angle,4);
+        control(0x55,bytes,4);
+        CHECK(last(0x3B)->data[6]==1 && servoPulse==500U+i*1000U);
+        CHECK(last(0x57)->data[6]==1);
+    }
+    for(unsigned i=0;i<4;++i) {
+        angle=i==0?-1.0f:i==1?181.0f:i==2?NAN:INFINITY;
+        memcpy(bytes,&angle,4);control(0x55,bytes,4);
+        CHECK(last(0x3B)->data[6]==0 && servoPulse==2500U);
+    }
+    control(0x55,bytes,3);CHECK(last(0x3B)->data[6]==0);
+    control(0x57,NULL,0);CHECK(last(0x3B)->data[6]==1 && last(0x57)->len==8);
+    failServo=1;angle=90;memcpy(bytes,&angle,4);control(0x55,bytes,4);
+    CHECK(last(0x3B)->data[6]==0 && servoPulse==2500U);
+    failServo=0;control(0x56,NULL,0);
+    CHECK(last(0x3B)->data[6]==1 && servoPulse==0 && last(0x57)->data[6]==0);
+    reset();{uint8_t old[2]={3,63};control(0x50,old,2);CHECK(last(0x3B)->data[6]==0);}
+}
+
 int main(void)
 {
     repeated_moves(); path_and_capacity(); failures(); transport();
     continuous_path();
     five_axis_protocol();
+    gripper_commands();
     printf("CAN42 CHECKS PASSED: %u\n",checks);
     return 0;
 }

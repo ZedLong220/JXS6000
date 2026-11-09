@@ -48,7 +48,7 @@ static uint32_t lastQuery, lastStatus, txErrors;
 static uint8_t pathCount, pathIndex, pathPlaying, pathRepeat;
 static uint8_t oneShot, movingMask, lastError;
 static DualAxisState state;
-/* Version 3: selected nodes 1..5 execute the buffered curve locally. */
+/* Version 4: selected nodes 1..6 execute the buffered curve locally. */
 typedef struct {
     uint8_t valid, state, count, index, error;
     uint16_t session;
@@ -59,7 +59,7 @@ static float splineStart[CAN_AXIS_COUNT], nextVelocity[CAN_AXIS_COUNT];
 static uint8_t splineEnabled, velocityReady, uploadStage, uploadIndex;
 static uint16_t splineSession;
 static uint32_t uploadSince, lastSplineQuery;
-static uint8_t requiredMask=CAN_AXIS_MASK, fiveAxisMode;
+static uint8_t requiredMask=CAN_AXIS_MASK, multiAxisMode;
 static uint8_t startMask, targetMask, velocityMask, stageOpen;
 static TrajectoryPoint staged;
 static uint32_t stageSince;
@@ -130,7 +130,7 @@ static void publish_status(void)
     data[3] = movingMask;
     data[4] = pathCount;
     data[5] = pathPlaying ? pathIndex : 0xFFU;
-    data[6]=requiredMask; data[7]=3U; /* bit0=J1 ... bit4=J5 */
+    data[6]=requiredMask; data[7]=CAN_PATH_PROTOCOL_VERSION; /* bit0=J1 ... bit5=J6 */
     CAN_SendHostFrame(CAN_CMD_CONTROLLER_STATUS, data, sizeof(data));
     lastStatus = HAL_GetTick();
 }
@@ -291,7 +291,7 @@ static void update_spline(uint32_t now)
         if (uploadIndex<pathCount) {
             if (upload_block()!=0) fault(1U);
         } else {
-            uint8_t sync[8]={0xFFU,0x66U,3U,0U,0U,0U,0U,0U};
+            uint8_t sync[8]={0xFFU,0x66U,CAN_PATH_PROTOCOL_VERSION,0U,0U,0U,0U,0U};
             for (uint8_t i=0U;i<CAN_AXIS_COUNT;++i)
                 if ((requiredMask&(1U<<i)) && fabsf(feedback[i].positionRev-splineStart[i])>0.02f) { fault(6U); return; }
             sync[3]=requiredMask; sync[4]=pathCount; sync[5]=pathRepeat;
@@ -359,7 +359,7 @@ void CAN_DualAxisInit(void)
     state = DUAL_AXIS_IDLE;
     splineEnabled=velocityReady=uploadStage=0U;
     splineSession=0U; lastSplineQuery=0U; requiredMask=CAN_AXIS_MASK;
-    fiveAxisMode=startMask=targetMask=velocityMask=stageOpen=0U;
+    multiAxisMode=startMask=targetMask=velocityMask=stageOpen=0U;
     memset(splineFeedback,0,sizeof(splineFeedback));
 }
 
@@ -389,7 +389,7 @@ int CAN_DualAxisMove(float j2, float j3, float duration)
     TrajectoryPoint point = {{0.0f,j2,j3,0.0f,0.0f}, duration, {0}};
     if (!CAN_ValidateTarget(j2, j3, duration) || CAN_DualAxisIsActive()) return -1;
     pathCount = pathIndex = 0U;
-    requiredMask=0x06U; fiveAxisMode=0U; oneShot = 1U;
+    requiredMask=0x06U; multiAxisMode=0U; oneShot = 1U;
     if (begin_point(&point) != 0) { fault(1U); return -2; }
     return 0;
 }
@@ -399,21 +399,21 @@ void CAN_TrajectoryClear(void)
     if (CAN_DualAxisIsActive()) CAN_DualAxisStop();
     pathCount = pathIndex = 0U;
     splineEnabled=velocityReady=0U;
-    fiveAxisMode=startMask=targetMask=velocityMask=stageOpen=0U; requiredMask=CAN_AXIS_MASK;
+    multiAxisMode=startMask=targetMask=velocityMask=stageOpen=0U; requiredMask=CAN_AXIS_MASK;
     set_state(DUAL_AXIS_IDLE, 0U);
 }
 
 int CAN_TrajectorySetStart(float j2,float j3)
 {
     if (CAN_DualAxisIsActive() || pathCount || !CAN_ValidateTarget(j2,j3,1.0f)) return -1;
-    if (fiveAxisMode) return -1;
+    if (multiAxisMode) return -1;
     requiredMask=0x06U; splineStart[1]=j2; splineStart[2]=j3; splineEnabled=1U; velocityReady=0U;
     return 0;
 }
 int CAN_TrajectorySetVelocity(float j2,float j3)
 {
     velocityReady=0U;
-    if (fiveAxisMode || !splineEnabled || CAN_DualAxisIsActive() || !isfinite(j2) || !isfinite(j3) ||
+    if (multiAxisMode || !splineEnabled || CAN_DualAxisIsActive() || !isfinite(j2) || !isfinite(j3) ||
         fabsf(j2)>30.0f || fabsf(j3)>30.0f) return -1;
     nextVelocity[1]=j2; nextVelocity[2]=j3; velocityReady=1U;
     return 0;
@@ -422,9 +422,9 @@ void CAN_TrajectoryDiscardVelocity(void) { velocityReady=0U; stageOpen=0U; targe
 
 int CAN_MultiBegin(uint8_t version,uint8_t mask)
 {
-    if (version!=3U || !mask || (mask & ~CAN_AXIS_MASK) || CAN_DualAxisIsActive()) return -1;
+    if (version!=CAN_PATH_PROTOCOL_VERSION || !mask || (mask & ~CAN_AXIS_MASK) || CAN_DualAxisIsActive()) return -1;
     CAN_TrajectoryClear();
-    requiredMask=mask; fiveAxisMode=splineEnabled=1U;
+    requiredMask=mask; multiAxisMode=splineEnabled=1U;
     memset(splineStart,0,sizeof(splineStart));
     set_state(DUAL_AXIS_BUFFERING,0U);
     return 0;
@@ -435,7 +435,7 @@ int CAN_MultiSetStart(uint8_t node,float position)
     uint8_t bit;
     if (node<1U || node>CAN_AXIS_COUNT) return -1;
     bit=(uint8_t)(1U<<(node-1U));
-    if (!fiveAxisMode || CAN_DualAxisIsActive() || pathCount || stageOpen ||
+    if (!multiAxisMode || CAN_DualAxisIsActive() || pathCount || stageOpen ||
         !(requiredMask&bit) || !CAN_ValidateTarget(position,position,1.0f)) return -1;
     splineStart[node-1U]=position; startMask|=bit;
     return 0;
@@ -444,7 +444,7 @@ int CAN_MultiSetStart(uint8_t node,float position)
 int CAN_MultiStage(uint16_t sequence,float duration)
 {
     CAN_TrajectoryDiscardVelocity();
-    if (!fiveAxisMode || CAN_DualAxisIsActive() || startMask!=requiredMask ||
+    if (!multiAxisMode || CAN_DualAxisIsActive() || startMask!=requiredMask ||
         sequence!=pathCount || pathCount>=CAN_TRAJECTORY_MAX_POINTS ||
         !CAN_ValidateTarget(0.0f,0.0f,duration)) return -1;
     memset(&staged,0,sizeof(staged));
@@ -455,7 +455,7 @@ int CAN_MultiStage(uint16_t sequence,float duration)
 int CAN_MultiValue(uint8_t node,uint8_t kind,uint16_t sequence,float value)
 {
     uint8_t bit;
-    if (!fiveAxisMode || CAN_DualAxisIsActive() || !stageOpen || sequence!=pathCount ||
+    if (!multiAxisMode || CAN_DualAxisIsActive() || !stageOpen || sequence!=pathCount ||
         HAL_GetTick()-stageSince>=1500U || node<1U || node>CAN_AXIS_COUNT || kind>1U ||
         !isfinite(value)) { CAN_TrajectoryDiscardVelocity(); return -1; }
     bit=(uint8_t)(1U<<(node-1U));
@@ -469,7 +469,7 @@ int CAN_MultiValue(uint8_t node,uint8_t kind,uint16_t sequence,float value)
 
 int CAN_MultiCommit(uint16_t sequence)
 {
-    uint8_t valid=fiveAxisMode && !CAN_DualAxisIsActive() && stageOpen && sequence==pathCount &&
+    uint8_t valid=multiAxisMode && !CAN_DualAxisIsActive() && stageOpen && sequence==pathCount &&
         pathCount<CAN_TRAJECTORY_MAX_POINTS && targetMask==requiredMask && velocityMask==requiredMask &&
         HAL_GetTick()-stageSince<1500U;
     CAN_TrajectoryDiscardVelocity();
@@ -483,7 +483,7 @@ int CAN_TrajectoryEnqueue(float j2, float j3, float duration)
 {
     uint8_t hadVelocity=velocityReady;
     velocityReady=0U;
-    if (fiveAxisMode || CAN_DualAxisIsActive() || pathCount >= CAN_TRAJECTORY_MAX_POINTS ||
+    if (multiAxisMode || CAN_DualAxisIsActive() || pathCount >= CAN_TRAJECTORY_MAX_POINTS ||
         !CAN_ValidateTarget(j2, j3, duration) || (splineEnabled && !hadVelocity)) return -1;
     requiredMask=0x06U;
     path[pathCount].target[1] = j2;
@@ -498,7 +498,7 @@ int CAN_TrajectoryEnqueue(float j2, float j3, float duration)
 
 int CAN_TrajectoryStart(uint8_t repeat)
 {
-    if (pathCount == 0U || CAN_DualAxisIsActive() || (fiveAxisMode && (startMask!=requiredMask || stageOpen))) return -1;
+    if (pathCount == 0U || CAN_DualAxisIsActive() || (multiAxisMode && (startMask!=requiredMask || stageOpen))) return -1;
     if (splineEnabled) {
         for (uint8_t i=0U;i<CAN_AXIS_COUNT;++i)
             if ((requiredMask&(1U<<i)) && ((!repeat && path[pathCount-1U].velocity[i]!=0.0f) ||
@@ -544,7 +544,7 @@ static void process_rx(void)
         __DMB();
         rxTail = (uint8_t)((rxTail + 1U) % RX_QUEUE_SIZE);
         if ((node>=1U && node<=CAN_AXIS_COUNT) && cmd==0x3CU && frame.length==8U &&
-            frame.data[0]==3U && (frame.data[5]&0x05U)==0x05U) {
+            frame.data[0]==CAN_PATH_PROTOCOL_VERSION && (frame.data[5]&0x05U)==0x05U) {
             SplineFeedback *f=&splineFeedback[node-1U];
             f->valid=1U; f->state=frame.data[1]; f->count=frame.data[2];
             f->index=frame.data[3]; f->error=frame.data[4];

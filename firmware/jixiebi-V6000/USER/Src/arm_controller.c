@@ -5,7 +5,7 @@
 void Arm_Init(void)
 {
     CAN_DualAxisInit();
-    printf("Five-axis CAN path coordinator v3: nodes 1..5, virtual J6 fixed\r\n");
+    printf("Six-axis CAN path coordinator v4: nodes 1..6; gripper PWM PA0\r\n");
 }
 
 void Arm_Update(void)

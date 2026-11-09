@@ -46,7 +46,7 @@ void PrepareSplineBlock() {
 }
 static void SendSplineStatus() {
     BufferedPath &path=motor.motionPlanner.bufferedPath;
-    uint8_t data[8]={3U,path.state,path.count,path.index,path.error,0x05U,
+    uint8_t data[8]={4U,path.state,path.count,path.index,path.error,0x05U,
                     (uint8_t)path.session,(uint8_t)(path.session>>8)};
     txHeader.StdId=(boardConfig.canNodeId<<7)|0x3CU;
     CAN_Send(&txHeader,data);
@@ -159,11 +159,11 @@ void OnCanCmd(uint8_t _cmd, uint8_t* _data, uint32_t _len)
         pendingSplineValid=true;
         return;
     }
-    if (_cmd==0x66U && _len==8U && _data[0]==0xFFU && _data[1]==0x66U && _data[2]==3U) {
-        if (boardConfig.canNodeId<1U || boardConfig.canNodeId>5U ||
+    if (_cmd==0x66U && _len==8U && _data[0]==0xFFU && _data[1]==0x66U && _data[2]==4U) {
+        if (boardConfig.canNodeId<1U || boardConfig.canNodeId>6U ||
             !(_data[3] & (1U<<(boardConfig.canNodeId-1U)))) return;
         uint16_t id=(uint16_t)(_data[6]|((uint16_t)_data[7]<<8));
-        if ((_data[3]&~0x1FU)!=0U || !motor.controller->CanStartBufferedPath(path.blocks[0].p0)) {
+        if ((_data[3]&~0x3FU)!=0U || !motor.controller->CanStartBufferedPath(path.blocks[0].p0)) {
             path.Fail(2); return;
         }
         if (path.Start(_data[4],id,_data[5]!=0U)) {
@@ -327,7 +327,7 @@ void OnCanCmd(uint8_t _cmd, uint8_t* _data, uint32_t _len)
         case 0x39: // Buffered path protocol version + encoder/spline capabilities
         {
             if (_len!=0U) break;
-            uint8_t data[8]={3U,0x05U,BufferedPath::Capacity,0U};
+            uint8_t data[8]={4U,0x05U,BufferedPath::Capacity,0U};
             txHeader.StdId=(boardConfig.canNodeId<<7)|0x39U;
             CAN_Send(&txHeader,data);
         }

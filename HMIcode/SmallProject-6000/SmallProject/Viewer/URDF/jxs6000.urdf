@@ -5,10 +5,10 @@
     assembly dated 2026-11. STL coordinates are millimetres with CAD +Y up;
     mesh origins rotate CAD into the URDF Z-up frame and scale to metres.
 
-    S1 is stationary. S2-S6 belong to link_1-link_5. The supplied model is a
-    five-axis mechanical assembly, while the existing controller/HMI exchanges
-    six joint values, so joint_6 is retained as a geometry-free output-flange
-    axis. Joint limits and dynamics are provisional until production limits and
+    S1 is stationary. S2-S6 belong to link_1-link_5. Physical joint_6 controls
+    the output flange from -180 to +180 degrees. Its axis is retained from the
+    existing tool frame; separate flange/gripper meshes were not supplied.
+    Joint limits and dynamics are provisional until production limits and
     calibrated mass properties are available.
   -->
 

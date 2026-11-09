@@ -27,7 +27,6 @@ namespace SmallProject.Devices.Arm.Kinematic
         {
             solutions = new IKSolves_t();
             var lower=Model.LowerDegrees.ToArray(); var upper=Model.UpperDegrees.ToArray();
-            lower[5]=upper[5]=0;
             if (!Model.TryInverse(pose, JointCoordinateMap.ToModel(last.a), out var q,lower,upper)) return false;
             solutions.config[0] = new Joint6D_t(JointCoordinateMap.ToLegacy(q));
             solutions.solFlag[0] = new[] { 1, 1, 1 };
@@ -38,7 +37,6 @@ namespace SmallProject.Devices.Arm.Kinematic
             result = new Joint6D_t();
             var lower = JointCoordinateMap.ToModel(motors.Select(m => m.AngleLimitMin).ToArray());
             var upper = JointCoordinateMap.ToModel(motors.Select(m => m.AngleLimitMax).ToArray());
-            lower[5]=upper[5]=0;
             if (!Model.TryInverse(pose, JointCoordinateMap.ToModel(current.a), out var q, lower, upper)) return false;
             result = new Joint6D_t(JointCoordinateMap.ToLegacy(q));
             return true;
