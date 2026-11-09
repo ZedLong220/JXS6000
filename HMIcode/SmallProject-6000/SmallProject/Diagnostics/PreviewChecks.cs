@@ -78,6 +78,23 @@ namespace SmallProject.Diagnostics
                     "Top pose input is reachable after scrolling back");
                 window.OperationScroll.Height=double.NaN;
                 window.UpdateLayout();
+                var torqueOrigin=window.gb_ArmControl.TranslatePoint(new System.Windows.Point(),window);
+                var logOrigin=window.gb_Log.TranslatePoint(new System.Windows.Point(),window);
+                Check(logOrigin.X>=torqueOrigin.X+window.gb_ArmControl.ActualWidth && Math.Abs(logOrigin.Y-torqueOrigin.Y)<1,
+                    "Log panel sits beside the torque panel");
+                Check(window.tbLog.IsEnabled && window.tbLog.IsReadOnly,
+                    "Log remains selectable while torque monitoring is disabled");
+                var savedLog=window.tbLog.Text;
+                window.tbLog.Text=string.Join(Environment.NewLine,Enumerable.Range(1,100).Select(i=>$"日志滚动检查 {i}"));
+                window.UpdateLayout();
+                window.tbLog.ScrollToEnd();
+                await window.Dispatcher.InvokeAsync(()=>window.UpdateLayout(),System.Windows.Threading.DispatcherPriority.ContextIdle);
+                Check(window.tbLog.ExtentHeight>window.tbLog.ViewportHeight && window.tbLog.VerticalOffset>0,
+                    "Long logs scroll to the latest entry");
+                window.tbLog.ScrollToHome();
+                await window.Dispatcher.InvokeAsync(()=>window.UpdateLayout(),System.Windows.Threading.DispatcherPriority.ContextIdle);
+                Check(window.tbLog.VerticalOffset==0,"Log can scroll back to earlier entries");
+                window.tbLog.Text=savedLog;
                 Check(!window.tb_Joint6.IsReadOnly,"J6 input is editable");
                 Check(window.pg_ClawAngle.Maximum==180 && window.bt_ClawApply.IsVisible,"Gripper PWM controls are available");
                 Check(window.JykerKinematicContrl.ApplyModelJoints(new double[]{0,0,0,0,0,1}),"Native interface accepts physical J6 movement");
