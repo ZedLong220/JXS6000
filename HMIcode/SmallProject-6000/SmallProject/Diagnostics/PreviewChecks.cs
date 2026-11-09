@@ -45,6 +45,22 @@ namespace SmallProject.Diagnostics
                     new[]{new double[]{.5,-.5,.5,.5,.5,30},new double[]{-.5,-.5,-.5,-.5,-.5,-45},zero},
                     new[]{1.0,1.0,1.0},new[]{30.0/360,-150.0/360,150.0/360,-100.0/360,100.0/360,1.0/360},false);
                 Check((await preview.ValidatePathAsync(fivePlan.Samples)).ok,"Six-axis rounded wire curve passes WebView validation");
+                // Exercise scrolling with less space than the operation controls need.
+                window.OperationScroll.Height=240;
+                window.UpdateLayout();
+                Check(window.OperationScroll.ViewportHeight>0 && window.OperationScroll.ScrollableHeight>0,
+                    "Operation panel scrolls in a short viewport");
+                window.OperationScroll.ScrollToBottom();
+                await window.Dispatcher.InvokeAsync(()=>window.UpdateLayout(),System.Windows.Threading.DispatcherPriority.ContextIdle);
+                window.bt_StartDetect.IsEnabled=true;
+                var videoPoint=window.bt_StartDetect.TranslatePoint(new System.Windows.Point(
+                    window.bt_StartDetect.ActualWidth/2,window.bt_StartDetect.ActualHeight/2),window);
+                var videoHit=window.InputHitTest(videoPoint) as System.Windows.DependencyObject;
+                Check(videoHit==window.bt_StartDetect || (videoHit!=null && window.bt_StartDetect.IsAncestorOf(videoHit)),
+                    "Bottom video button is reachable after scrolling");
+                window.bt_StartDetect.IsEnabled=false;
+                window.bt_MoveFivePath.BringIntoView();
+                await window.Dispatcher.InvokeAsync(()=>window.UpdateLayout(),System.Windows.Threading.DispatcherPriority.ContextIdle);
                 Check(window.bt_MoveFivePath.IsVisible && window.bt_MoveFivePath.ActualHeight>0,"Six-axis path button is visible");
                 // A rendered button must also be reachable, not covered by another row.
                 window.bt_MoveFivePath.IsEnabled=true;
@@ -54,6 +70,14 @@ namespace SmallProject.Diagnostics
                 Check(hit==window.bt_MoveFivePath || (hit!=null && window.bt_MoveFivePath.IsAncestorOf(hit)),
                     "Six-axis path button is not covered by video controls");
                 window.bt_MoveFivePath.IsEnabled=false;
+                window.OperationScroll.ScrollToTop();
+                await window.Dispatcher.InvokeAsync(()=>window.UpdateLayout(),System.Windows.Threading.DispatcherPriority.ContextIdle);
+                var inputPoint=window.tb_X.TranslatePoint(new System.Windows.Point(window.tb_X.ActualWidth/2,window.tb_X.ActualHeight/2),window);
+                var inputHit=window.InputHitTest(inputPoint) as System.Windows.DependencyObject;
+                Check(inputHit==window.tb_X || (inputHit!=null && window.tb_X.IsAncestorOf(inputHit)),
+                    "Top pose input is reachable after scrolling back");
+                window.OperationScroll.Height=double.NaN;
+                window.UpdateLayout();
                 Check(!window.tb_Joint6.IsReadOnly,"J6 input is editable");
                 Check(window.pg_ClawAngle.Maximum==180 && window.bt_ClawApply.IsVisible,"Gripper PWM controls are available");
                 Check(window.JykerKinematicContrl.ApplyModelJoints(new double[]{0,0,0,0,0,1}),"Native interface accepts physical J6 movement");
