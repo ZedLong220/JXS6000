@@ -1,0 +1,27 @@
+#ifndef _RETARGET_H__
+#define _RETARGET_H__
+
+#include "stm32f1xx_hal.h"
+#if defined(__ARMCC_VERSION)
+    struct stat { int st_mode; };
+    #define S_IFCHR 0x2000
+#elif defined(__GNUC__)
+    #include <sys/stat.h>
+#endif
+#include <stdio.h>
+
+void RetargetInit(UART_HandleTypeDef *huart);
+
+int _isatty(int fd);
+
+int _write(int fd, char *ptr, int len);
+
+int _close(int fd);
+
+int _lseek(int fd, int ptr, int dir);
+
+int _read(int fd, char *ptr, int len);
+
+int _fstat(int fd, struct stat *st);
+
+#endif //#ifndef _RETARGET_H__

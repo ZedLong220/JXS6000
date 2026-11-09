@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#171a1d" />
+    <link rel="icon" href="data:," />
+    <title>JXS6000 机械臂模拟器</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: Inter, "Microsoft YaHei", "PingFang SC", Arial, sans-serif;
+        letter-spacing: 0;
+        --panel: rgba(24, 28, 31, 0.94);
+        --line: #3b4247;
+        --muted: #9ea7ad;
+        --text: #f0f3f4;
+        --accent: #34b37b;
+        --accent-2: #f0a14a;
+      }
+
+      * { box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: #171a1d; }
+      button, input { font: inherit; }
+      button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+      .app { position: relative; width: 100%; height: 100%; }
+      #viewport { position: absolute; inset: 0; }
+      #viewport canvas { display: block; width: 100%; height: 100%; }
+
+      .topbar {
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        z-index: 10;
+        height: 58px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 0 18px;
+        border-bottom: 1px solid rgba(255,255,255,0.1);
+        background: rgba(18, 21, 23, 0.88);
+        backdrop-filter: blur(12px);
+      }
+
+      .brand { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+      .brand strong { font-size: 17px; font-weight: 700; white-space: nowrap; }
+      .brand span { color: var(--muted); font-size: 12px; white-space: nowrap; }
+      .topbar__actions { display: flex; flex-shrink: 0; gap: 8px; }
+
+      .button {
+        flex-shrink: 0;
+        min-height: 34px;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        padding: 0 12px;
+        color: var(--text);
+        background: #292f33;
+        cursor: pointer;
+        white-space: nowrap;
+      }
+      .button:hover { background: #343b40; }
+      .button--primary { border-color: #288e62; background: #237a55; }
+      .button--primary:hover { background: #2a9165; }
+      .button__short, .panel-toggle { display: none; }
+
+      .motion-alert {
+        position: fixed;
+        z-index: 12;
+        top: 70px;
+        left: 50%;
+        max-width: calc(100vw - 32px);
+        padding: 9px 13px;
+        border: 1px solid #b94952;
+        border-radius: 6px;
+        color: #fff;
+        background: rgba(137, 39, 47, 0.96);
+        box-shadow: 0 12px 32px rgba(0,0,0,0.34);
+        font-size: 13px;
+        font-weight: 650;
+        transform: translateX(-50%);
+      }
+      .motion-alert[hidden] { display: none; }
+
+      .panel {
+        position: fixed;
+        z-index: 9;
+        top: 74px;
+        left: 16px;
+        width: min(330px, calc(100vw - 32px));
+        max-height: calc(100vh - 92px);
+        overflow: auto;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--panel);
+        box-shadow: 0 16px 44px rgba(0,0,0,0.32);
+        scrollbar-width: thin;
+      }
+
+      .panel__section { padding: 14px; border-bottom: 1px solid var(--line); }
+      .panel__section:last-child { border-bottom: 0; }
+      .section-title { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+      .section-title h2 { margin: 0; font-size: 13px; font-weight: 650; }
+
+      .status { display: inline-flex; align-items: center; gap: 7px; color: var(--muted); font-size: 12px; }
+      .status__dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent-2); }
+      .status[data-state="ready"] .status__dot { background: var(--accent); }
+      .status[data-state="error"] .status__dot { background: #e15b64; }
+
+      .joint-row { position: relative; padding: 8px 0 11px; }
+      .joint-row + .joint-row { border-top: 1px solid rgba(255,255,255,0.07); }
+      .joint-row__top { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 7px; }
+      .joint-row label { color: #dce1e3; font-size: 12px; }
+      .joint-row output { min-width: 48px; color: var(--accent); font: 600 12px/1 monospace; text-align: right; }
+      .joint-row input { display: block; width: calc(100% - 50px); accent-color: var(--accent); }
+      .joint-row__keys { position: absolute; right: 0; bottom: 13px; width: 42px; color: var(--muted); font: 11px/1 monospace; text-align: right; }
+
+      .speed-row { display: grid; grid-template-columns: 1fr 58px; align-items: center; gap: 10px; }
+      .speed-row input { width: 100%; accent-color: var(--accent-2); }
+      .speed-row output { color: var(--accent-2); font: 600 12px/1 monospace; text-align: right; }
+      .safety-toggle { display: flex; align-items: center; gap: 7px; margin-top: 13px; font-size: 12px; }
+      .safety-toggle input { accent-color: var(--accent); }
+      .model-note { margin: 9px 0 0; color: var(--muted); font-size: 11px; line-height: 1.6; }
+
+      .pose {
+        position: fixed;
+        z-index: 9;
+        right: 16px;
+        bottom: 16px;
+        width: 270px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--panel);
+        box-shadow: 0 16px 44px rgba(0,0,0,0.28);
+      }
+      .pose__title { padding: 11px 13px; border-bottom: 1px solid var(--line); font-size: 12px; font-weight: 650; }
+      .pose__grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1px; min-width: 0; background: var(--line); }
+      .pose__cell { min-width: 0; padding: 10px; background: #202529; text-align: center; }
+      .pose__cell span { display: block; margin-bottom: 4px; color: var(--muted); font-size: 10px; }
+      .pose__cell strong { color: var(--text); font: 600 12px/1 monospace; }
+
+      @media (max-width: 720px) {
+        .topbar { height: 54px; padding: 0 10px; }
+        .brand span { display: none; }
+        .brand strong { font-size: 15px; }
+        .topbar__actions { gap: 6px; min-width: 0; }
+        .button { min-height: 32px; padding: 0 8px; font-size: 12px; }
+        .button__wide { display: none; }
+        .button__short, .panel-toggle { display: inline; }
+        .motion-alert { top: 64px; white-space: nowrap; }
+        .panel {
+          top: 66px;
+          left: 10px;
+          width: min(300px, calc(100vw - 20px));
+          max-height: calc(100vh - 190px);
+          transition: opacity 160ms ease, transform 160ms ease;
+        }
+        .panel.is-collapsed { pointer-events: none; opacity: 0; transform: translateX(calc(-100% - 14px)); }
+        .pose {
+          left: 10px;
+          right: auto;
+          bottom: 10px;
+          width: calc(100vw - 20px);
+          min-width: 0;
+          max-width: calc(100vw - 20px);
+          overflow: hidden;
+        }
+        .pose__cell { padding: 9px 4px; }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="app">
+      <div id="viewport" aria-label="JXS6000 三维机械臂视图"></div>
+
+      <header class="topbar">
+        <div class="brand"><strong>JXS6000</strong><span>六轴控制机械臂模拟器</span></div>
+        <div class="topbar__actions">
+          <button class="button panel-toggle" id="panelToggle" type="button" aria-controls="controlPanel" aria-expanded="false">控制</button>
+          <button class="button" id="resetView" type="button"><span class="button__wide">复位视角</span><span class="button__short">视角</span></button>
+          <button class="button button--primary" id="resetJoints" type="button"><span class="button__wide">关节归零</span><span class="button__short">归零</span></button>
+        </div>
+      </header>
+
+      <div class="motion-alert" id="motionAlert" role="alert" hidden>检测到碰撞，已拒绝运动</div>
+
+      <aside class="panel" id="controlPanel" aria-label="机械臂控制面板">
+        <section class="panel__section">
+          <div class="section-title">
+            <h2>模型状态</h2>
+            <div class="status" id="modelStatus" data-state="loading" aria-live="polite"><span class="status__dot"></span><span>正在加载模型</span></div>
+          </div>
+          <div class="speed-row">
+            <input id="speedControl" type="range" min="0.1" max="2" step="0.05" value="0.75" aria-label="键盘控制速度" />
+            <output id="speedValue">0.75°</output>
+          </div>
+          <label class="safety-toggle"><input id="collisionBlocking" type="checkbox" checked />碰撞时阻止运动</label>
+          <p class="model-note">碰撞检测使用 JXS6000 的独立 STL 网格。J6 为兼容六轴协议保留的虚拟法兰轴，只改变末端坐标系。</p>
+        </section>
+        <section class="panel__section">
+          <div class="section-title"><h2>关节控制</h2></div>
+          <div id="jointControls"></div>
+        </section>
+      </aside>
+
+      <section class="pose" aria-label="末端位姿">
+        <div class="pose__title">末端位姿 · 基坐标系</div>
+        <div class="pose__grid">
+          <div class="pose__cell"><span>X / m</span><strong id="posX">0.000</strong></div>
+          <div class="pose__cell"><span>Y / m</span><strong id="posY">0.000</strong></div>
+          <div class="pose__cell"><span>Z / m</span><strong id="posZ">0.000</strong></div>
+          <div class="pose__cell"><span>Roll / °</span><strong id="rotR">0.0</strong></div>
+          <div class="pose__cell"><span>Pitch / °</span><strong id="rotP">0.0</strong></div>
+          <div class="pose__cell"><span>Yaw / °</span><strong id="rotY">0.0</strong></div>
+        </div>
+      </section>
+    </main>
+    <script type="module" src="/index.js"></script>
+  </body>
+</html>

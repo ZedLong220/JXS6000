@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../SmallProject/Devices/Arm/Kinematic/**/*.cs" Link="Kinematic/%(RecursiveDir)%(Filename)%(Extension)" />
+    <Compile Include="../SmallProject/Devices/Arm/CtrlStep/CtrlStepMotor.cs" Link="CtrlStepMotor.cs" />
+    <Compile Include="../SmallProject/Configs/JConfiguration.cs" Link="JConfiguration.cs" />
+    <Compile Include="../SmallProject/Serials/Slcan/SlcanReceiveDecoder.cs" Link="SlcanReceiveDecoder.cs" />
+    <None Include="../ViewerSource/public/URDF/jxs6000.urdf" Link="jxs6000.urdf" CopyToOutputDirectory="PreserveNewest" />
+    <None Update="reference-poses.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

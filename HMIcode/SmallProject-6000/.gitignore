@@ -1,0 +1,27 @@
+# IDE state
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# Build output
+**/bin/
+**/obj/
+**/publish/
+
+# Runtime settings, records and logs
+/DATA/
+/SmallProject/DATA/
+**/logs/
+*.log
+*.data
+output.wav
+
+# Frontend dependencies (retain SmallProject/Viewer for offline use)
+**/node_modules/
+ViewerSource/dist/
+
+# Temporary files
+*.tmp
+*.cache

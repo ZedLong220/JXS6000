@@ -1,0 +1,38 @@
+# IDE and build output
+**/.vs/
+**/.idea/
+**/bin/
+**/obj/
+**/node_modules/
+**/publish/
+**/__pycache__/
+*.user
+*.suo
+*.uvguix.*
+*.o
+*.obj
+*.axf
+*.lst
+*.map
+*.d
+*.crf
+*.dep
+*.pyc
+*.log
+*.tmp
+*.cache
+*.exe
+
+# Keil generated output (ready-to-flash images live in firmware/hex)
+firmware/jixiebi-V6000/MDK-ARM/jixiebi/
+firmware/user-firmware-keil-57/MDK-ARM/user-frimware-keil-57/
+firmware/user-firmware-keil-57/MDK-ARM/user-frimware-keil/
+
+# Personal runtime settings and records
+/HMIcode/SmallProject-6000/DATA/
+/HMIcode/SmallProject-6000/SmallProject/DATA/
+**/logs/
+*.data
+output.wav
+.env
+.env.*
