@@ -24,6 +24,20 @@ namespace SmallProject.Diagnostics
                 Check(!App.Core.Serial.IsOpen, "Serial must stay disconnected");
                 var zero = new double[6];
                 var testArm=new SmallProject.Devices.Arm.JykerArm();
+                var expectedDirections=new[]{-1,1,-1,1,-1,-1};
+                for(int axis=0;axis<6;axis++) {
+                    var motor=testArm.motorJ[axis];
+                    Check(motor.Direction==expectedDirections[axis],$"J{axis+1} uses the reversed harness direction");
+                    foreach(double target in new[]{1.0,-1.0,0.0}) {
+                        float revolutions=(float)(target*motor.Direction*motor.Reduction/360);
+                        testArm.RecievePos(axis+1,revolutions,true);
+                        Check(Math.Abs(motor.Angle-target)<1e-6,$"J{axis+1} signed feedback round trip {target}");
+                    }
+                }
+                var directionTarget=new double[]{.5,-.5,.5,.5,.5,30};
+                var directionPlan=ContinuousPathPlanner.Build(testArm.dof6Solver.Model,zero,new[]{directionTarget},
+                    new[]{2.0},testArm.motorJ.Select(m=>m.Direction*m.Reduction/360).ToArray(),false);
+                Check((await preview.ValidatePathAsync(directionPlan.Samples)).ok,"Reversed motor signs preserve the model collision path");
                 var queried=new System.Collections.Generic.List<int>();
                 var singlePosition=await testArm.ReadPositionsAsync(node=>{
                     queried.Add(node); testArm.RecievePos(node,.25f,true);
@@ -50,7 +64,8 @@ namespace SmallProject.Diagnostics
                 }
                 var plan=ContinuousPathPlanner.Build(App.Core.Jyker.dof6Solver.Model,zero,
                     new[]{new double[]{0,-.5,.5,0,0,0},new double[]{0,-.5,-.5,0,0,0},new double[6]},
-                    new[]{1.0,1.0,1.0},new[]{-150.0/360,150.0/360},false,jointIndices:new[]{1,2});
+                    new[]{1.0,1.0,1.0},new[]{testArm.motorJ[1].Direction*testArm.motorJ[1].Reduction/360,
+                        testArm.motorJ[2].Direction*testArm.motorJ[2].Reduction/360},false,jointIndices:new[]{1,2});
                 Check((await preview.ValidatePathAsync(plan.Samples)).ok,"Actual rounded path passes native/WebView batch validation");
                 Check(!(await preview.ValidatePathAsync(new[]{zero,new double[]{0,40,-40,0,0,0},zero})).ok,
                     "Old fixed test route is blocked by the new JXS6000 collision model");
@@ -69,13 +84,13 @@ namespace SmallProject.Diagnostics
                 Check(JointCoordinateMap.ToModel(App.Core.Jyker.prepareJoints.a).Zip(expanded).All(p=>Math.Abs(p.First-p.Second)<1e-8), "Expanded J2/J3 angles synchronize through WebView");
                 var fivePlan=ContinuousPathPlanner.Build(App.Core.Jyker.dof6Solver.Model,zero,
                     new[]{new double[]{.5,-.5,.5,.5,.5,30},new double[]{-.5,-.5,-.5,-.5,-.5,-45},zero},
-                    new[]{1.0,1.0,1.0},new[]{30.0/360,-150.0/360,150.0/360,-100.0/360,100.0/360,1.0/360},false);
+                    new[]{1.0,1.0,1.0},testArm.motorJ.Select(m=>m.Direction*m.Reduction/360).ToArray(),false);
                 Check((await preview.ValidatePathAsync(fivePlan.Samples)).ok,"Six-axis rounded wire curve passes WebView validation");
                 foreach(double angle in new[]{10.0,150.0}) {
                     var target=new double[]{0,0,angle,0,0,0};
                     var watch=System.Diagnostics.Stopwatch.StartNew();
                     var single=ContinuousPathPlanner.Build(App.Core.Jyker.dof6Solver.Model,zero,new[]{target},
-                        new[]{30.0},new[]{150.0/360},false,jointIndices:new[]{2});
+                        new[]{30.0},new[]{testArm.motorJ[2].Direction*testArm.motorJ[2].Reduction/360},false,jointIndices:new[]{2});
                     long planned=watch.ElapsedMilliseconds;
                     foreach(var samples in single.ValidationPaths())
                         Check((await preview.ValidatePathAsync(samples)).ok,$"Actual WebView accepts the J3 {angle} degree path");

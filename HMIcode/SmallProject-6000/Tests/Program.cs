@@ -61,7 +61,7 @@ Check(compatibility.SolveFK(new Joint6D_t(legacy), legacyPose) && Math.Abs(legac
 var fixedTargets = new[] {
     new double[] {0,40,-40,0,0,0}, new double[] {0,10,-50,0,0,0},
     new double[] {0,60,-10,0,0,0}, new double[] {0,50,-100,0,0,0}, new double[6] };
-var scale = new[] {-150.0/360,150.0/360};
+var scale = new[] {MotorCoordinateMap.Direction(1)*150.0/360,MotorCoordinateMap.Direction(2)*150.0/360};
 var continuous = ContinuousPathPlanner.Build(model,new double[6],fixedTargets,
     new double[] {4,3,5,6,8},scale,false,jointIndices:new[]{1,2});
 Check(continuous.Segments.Count==9,"Five fixed legs use four short corner blends");
@@ -112,7 +112,10 @@ File.WriteAllText(Path.Combine(AppContext.BaseDirectory,"continuous-samples.json
         safe=ContinuousPathPlanner.Build(model,new double[6],new[] {
             new double[]{0,-.5,.5,0,0,0},new double[]{0,-.5,-.5,0,0,0},
             new double[]{0,-1,-.5,0,0,0},new double[6] },new double[]{1,1,1,1},scale,false,jointIndices:new[]{1,2}).Samples}));
-var fiveScale=new[]{30.0/360,-150.0/360,150.0/360,-100.0/360,100.0/360};
+var reductions=new[]{30.0,150,150,100,100,1};
+var originalDirections=new[]{1,-1,1,-1,1,1};
+var sixScale=reductions.Select((ratio,i)=>MotorCoordinateMap.Direction(i)*ratio/360).ToArray();
+var fiveScale=sixScale.Take(5).ToArray();
 var fiveTargets=new[]{new double[]{.5,-.5,.5,.5,.5,0},new double[]{-.5,-.5,-.5,-.5,-.5,0},
     new double[]{.75,-.75,-.5,-.25,.25,0},new double[6]};
 var five=ContinuousPathPlanner.Build(model,new double[6],fiveTargets,new[]{1.0,1.0,1.0,1.0},fiveScale,false,jointIndices:new[]{0,1,2,3,4});
@@ -147,7 +150,6 @@ using(var wire=new StreamWriter(Path.Combine(AppContext.BaseDirectory,"five-axis
 var fixedLower=model.LowerDegrees.ToArray(); var fixedUpper=model.UpperDegrees.ToArray(); fixedLower[5]=fixedUpper[5]=0;
 var fivePose=model.Forward(new[]{10.0,-20,30,-10,15,0});
 Check(model.TryInverse(fivePose,new double[6],out var fiveAnswer,fixedLower,fixedUpper) && Math.Abs(fiveAnswer[5])<1e-8,"Five-axis IK never depends on the virtual sixth axis");
-var sixScale=new[]{30.0/360,-150.0/360,150.0/360,-100.0/360,100.0/360,1.0/360};
 var sixTargets=new[]{new double[]{.5,-.5,.5,.5,.5,30},new double[]{-.5,-.5,-.5,-.5,-.5,-45},
     new double[]{.75,-.75,-.5,-.25,.25,60},new double[6]};
 var six=ContinuousPathPlanner.Build(model,new double[6],sixTargets,new[]{1.0,1.0,1.0,1.0},sixScale,false);
@@ -186,6 +188,12 @@ for(int axis=0;axis<6;++axis) {
     var single=ContinuousPathPlanner.Build(model,new double[6],new[]{singleTarget},new[]{1.0},
         new[]{sixScale[axis]},false,jointIndices:new[]{axis});
     var singleHost=MultiAxisProtocol.Encode(single,new[]{axis},false);
+    Check(MotorCoordinateMap.Direction(axis)==-originalDirections[axis],$"J{axis+1} reverses its original motor direction");
+    var targetFrame=singleHost.Single(c=>c.Code==0x53 && c.Data[1]==0);
+    double sentRevolutions=BitConverter.ToSingle(targetFrame.Data,4);
+    Check(Math.Abs(sentRevolutions-.5*sixScale[axis])<1e-7,$"J{axis+1} wire target applies the new sign once");
+    Check(Math.Abs(sentRevolutions*360/(MotorCoordinateMap.Direction(axis)*reductions[axis])-.5)<1e-5,
+        $"J{axis+1} encoder inverse recovers the positive model angle");
     Check(single.ValidationPaths().Count()==1,$"J{axis+1} identical single move is checked once");
     Check(singleHost[0].Data.SequenceEqual(new byte[]{4,(byte)(1<<axis)}),$"J{axis+1} single-axis mask");
     Check(singleHost.Where(c=>c.Code==0x51 || c.Code==0x53).All(c=>c.Data[0]==axis+1),
