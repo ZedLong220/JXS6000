@@ -28,6 +28,16 @@ namespace SmallProject.WindowController
             JLog.Info("关节角度超出 URDF 模型限位。");
             return false;
         }
+        public bool TryReadModelJoint(int index, out double angle)
+        {
+            angle=0;
+            if(index<0 || index>=6 || !TryReadValues(new[]{JointInputs[index]},$"J{index+1}目标角度",out var values)) return false;
+            angle=values[0];
+            var model=App.Core.Jyker.dof6Solver.Model;
+            if(angle>=model.LowerDegrees[index] && angle<=model.UpperDegrees[index]) return true;
+            JLog.Info($"J{index+1}目标超出模型限位：{model.LowerDegrees[index]:F1}°～{model.UpperDegrees[index]:F1}°。");
+            return false;
+        }
         public bool CalculateForward()
         {
             if (!TryReadModelJoints(out var q)) return false;

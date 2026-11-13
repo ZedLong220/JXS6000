@@ -129,6 +129,7 @@ namespace SmallProject.WindowController
                 //M.bt_FK.IsEnabled = State;
                 //M.bt_IK.IsEnabled = State;
                 M.bt_MoveJoint.IsEnabled = State;
+                M.bt_MoveSingleAxis.IsEnabled = State;
                 M.bt_GetCurrentAngle.IsEnabled = State;
                 M.bt_AddRecord.IsEnabled = State;
                 M.bt_MoveArmHand.IsEnabled = State;

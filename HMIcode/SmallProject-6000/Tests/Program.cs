@@ -177,4 +177,25 @@ Check(sixHost.Where(c=>c.Code==0x53).Any(c=>c.Data[0]==6),"Node6 receives its ow
 Check(sixHost.All(c=>c.Data.Length<=8),"Six-axis frames fit classic CAN");
 File.WriteAllLines(Path.Combine(AppContext.BaseDirectory,"six-axis-host.txt"),sixHost.Select(c=>$"{c.Code:X2} {Convert.ToHexString(c.Data)}"));
 File.WriteAllText(Path.Combine(AppContext.BaseDirectory,"six-axis-samples.json"),System.Text.Json.JsonSerializer.Serialize(six.Samples));
+for(int axis=0;axis<6;++axis) {
+    var singleTarget=new double[6]; singleTarget[axis]=.5;
+    var single=ContinuousPathPlanner.Build(model,new double[6],new[]{singleTarget},new[]{1.0},
+        new[]{sixScale[axis]},false,jointIndices:new[]{axis});
+    var singleHost=MultiAxisProtocol.Encode(single,new[]{axis},false);
+    Check(singleHost[0].Data.SequenceEqual(new byte[]{4,(byte)(1<<axis)}),$"J{axis+1} single-axis mask");
+    Check(singleHost.Where(c=>c.Code==0x51 || c.Code==0x53).All(c=>c.Data[0]==axis+1),
+        $"J{axis+1} is the only node receiving start, target and velocity");
+    Check(single.Samples.All(q=>Enumerable.Range(0,6).Where(i=>i!=axis).All(i=>q[i]==0)),
+        $"J{axis+1} single-axis samples hold other joints fixed");
+    Check(singleHost.Last().Code==0x3A && singleHost.Last().Data.SequenceEqual(new byte[]{1}),
+        $"J{axis+1} runs once instead of repeating");
+    if(axis==2) {
+        File.WriteAllLines(Path.Combine(AppContext.BaseDirectory,"j3-only-host.txt"),
+            singleHost.Select(c=>$"{c.Code:X2} {Convert.ToHexString(c.Data)}"));
+        var returnPlan=ContinuousPathPlanner.Build(model,singleTarget,new[]{new double[6]},new[]{1.0},
+            new[]{sixScale[axis]},false,jointIndices:new[]{axis});
+        File.WriteAllLines(Path.Combine(AppContext.BaseDirectory,"j3-return-only-host.txt"),
+            MultiAxisProtocol.Encode(returnPlan,new[]{axis},false).Select(c=>$"{c.Code:X2} {Convert.ToHexString(c.Data)}"));
+    }
+}
 Console.WriteLine($"PASS: {passed} kinematics/planning/protocol checks; six-axis geometric bound {six.MaximumDeviationMm:F4} mm; fixture: six-axis-host.txt");

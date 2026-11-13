@@ -22,6 +22,31 @@ namespace SmallProject.Diagnostics
                 await preview.WaitUntilReadyAsync();
                 Check(!App.Core.Serial.IsOpen, "Serial must stay disconnected");
                 var zero = new double[6];
+                var testArm=new SmallProject.Devices.Arm.JykerArm();
+                var queried=new System.Collections.Generic.List<int>();
+                var singlePosition=await testArm.ReadPositionsAsync(node=>{
+                    queried.Add(node); testArm.RecievePos(node,.25f,true);
+                },()=>true,100,new[]{2});
+                double expectedJ3=.25*360/(testArm.motorJ[2].Direction*testArm.motorJ[2].Reduction);
+                Check(queried.SequenceEqual(new[]{3}) && singlePosition!=null && Math.Abs(singlePosition[2]-expectedJ3)<1e-6,
+                    "J3-only feedback succeeds without the other five boards and converts motor revolutions");
+                Check(singlePosition!.Where((v,i)=>i!=2).All(v=>v==0),"Absent axes retain the last model position");
+                var nextPosition=await testArm.ReadPositionsAsync(node=>testArm.RecievePos(node,.5f,true),()=>true,100,new[]{2});
+                Check(nextPosition!=null && Math.Abs(nextPosition[2]-2*expectedJ3)<1e-6,
+                    "The next single-axis move reads a new encoder position");
+                Check(await testArm.ReadPositionsAsync(_=>{},()=>true,60,new[]{2})==null,
+                    "Stale J3 feedback cannot start a new move");
+                Check(await testArm.ReadPositionsAsync(_=>testArm.RecievePos(2,0,true),()=>true,60,new[]{2})==null,
+                    "Another node cannot satisfy the J3 feedback wait");
+                Check(await testArm.ReadPositionsAsync(node=>{if(node==3)testArm.RecievePos(3,0,true);},()=>true,60)==null,
+                    "Six-axis mode still requires all six fresh encoder responses");
+                using(var cancelled=new System.Threading.CancellationTokenSource()) {
+                    cancelled.Cancel();
+                    bool wasCancelled=false;
+                    try { await testArm.ReadPositionsAsync(_=>{},()=>true,100,new[]{2},cancelled.Token); }
+                    catch(OperationCanceledException) { wasCancelled=true; }
+                    Check(wasCancelled,"Single-axis encoder wait observes stop cancellation");
+                }
                 var plan=ContinuousPathPlanner.Build(App.Core.Jyker.dof6Solver.Model,zero,
                     new[]{new double[]{0,-.5,.5,0,0,0},new double[]{0,-.5,-.5,0,0,0},new double[6]},
                     new[]{1.0,1.0,1.0},new[]{-150.0/360,150.0/360},false,jointIndices:new[]{1,2});
@@ -45,6 +70,15 @@ namespace SmallProject.Diagnostics
                     new[]{new double[]{.5,-.5,.5,.5,.5,30},new double[]{-.5,-.5,-.5,-.5,-.5,-45},zero},
                     new[]{1.0,1.0,1.0},new[]{30.0/360,-150.0/360,150.0/360,-100.0/360,100.0/360,1.0/360},false);
                 Check((await preview.ValidatePathAsync(fivePlan.Samples)).ok,"Six-axis rounded wire curve passes WebView validation");
+                Check(window.cb_SingleAxis.SelectedIndex==2 && !window.bt_MoveSingleAxis.IsEnabled,
+                    "Single-axis selector defaults to J3 and motion is disabled while disconnected");
+                string savedJ1=window.tb_Joint1.Text,savedJ3=window.tb_Joint3.Text;
+                window.tb_Joint1.Text="invalid"; window.tb_Joint3.Text="1";
+                Check(window.JykerKinematicContrl.TryReadModelJoint(2,out double singleTarget) && singleTarget==1,
+                    "Single-axis input ignores unrelated joint target fields");
+                window.tb_Joint3.Text="9999";
+                Check(!window.JykerKinematicContrl.TryReadModelJoint(2,out _),"Single-axis target outside URDF limits is rejected");
+                window.tb_Joint1.Text=savedJ1; window.tb_Joint3.Text=savedJ3;
                 // Exercise scrolling with less space than the operation controls need.
                 window.OperationScroll.Height=240;
                 window.UpdateLayout();
@@ -59,6 +93,13 @@ namespace SmallProject.Diagnostics
                 Check(videoHit==window.bt_StartDetect || (videoHit!=null && window.bt_StartDetect.IsAncestorOf(videoHit)),
                     "Bottom video button is reachable after scrolling");
                 window.bt_StartDetect.IsEnabled=false;
+                window.bt_MoveSingleAxis.IsEnabled=true;
+                var singlePoint=window.bt_MoveSingleAxis.TranslatePoint(new System.Windows.Point(
+                    window.bt_MoveSingleAxis.ActualWidth/2,window.bt_MoveSingleAxis.ActualHeight/2),window);
+                var singleHit=window.InputHitTest(singlePoint) as System.Windows.DependencyObject;
+                Check(singleHit==window.bt_MoveSingleAxis || (singleHit!=null && window.bt_MoveSingleAxis.IsAncestorOf(singleHit)),
+                    "Single-axis move button is reachable after scrolling");
+                window.bt_MoveSingleAxis.IsEnabled=false;
                 window.bt_MoveFivePath.BringIntoView();
                 await window.Dispatcher.InvokeAsync(()=>window.UpdateLayout(),System.Windows.Threading.DispatcherPriority.ContextIdle);
                 Check(window.bt_MoveFivePath.IsVisible && window.bt_MoveFivePath.ActualHeight>0,"Six-axis path button is visible");

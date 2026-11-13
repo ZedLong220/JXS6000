@@ -101,29 +101,41 @@ namespace SmallProject.Devices.Arm
             }
         }
 
-        public async Task<double[]?> ReadCurrentModelJointsAsync(int timeoutMilliseconds = 1500)
+        public Task<double[]?> ReadCurrentModelJointsAsync(int timeoutMilliseconds = 1500,
+            int[]? jointIndices = null, CancellationToken cancellationToken = default)
+            => ReadPositionsAsync(node=>App.Core.Serial.PushDataToQueue(SlcanParser.ParseSlcanQueryFrameStr(node,0x23)),
+                ()=>App.Core.Serial.IsOpen,timeoutMilliseconds,jointIndices,cancellationToken);
+
+        // The same feedback wait can be exercised without opening a hardware port.
+        internal async Task<double[]?> ReadPositionsAsync(Action<int> query, Func<bool> connected,
+            int timeoutMilliseconds, int[]? jointIndices = null, CancellationToken cancellationToken = default)
         {
-            if (!App.Core.Serial.IsOpen) return null;
+            if (!connected()) return null;
+            int[] axes=jointIndices?.ToArray() ?? new[]{0,1,2,3,4,5};
+            if(axes.Length==0 || axes.Length>6 || axes.Distinct().Count()!=axes.Length || axes.Any(i=>i<0 || i>=6))
+                throw new ArgumentException("读取轴只能选择J1～J6，且不能重复");
 
             long[] versions;
             lock (positionLock) versions=positionVersions.ToArray();
-            for (int i=0;i<6;++i)
-                App.Core.Serial.PushDataToQueue(SlcanParser.ParseSlcanQueryFrameStr(i+1,0x23));
+            foreach (int i in axes)
+                query(i+1);
 
             var stopwatch = Stopwatch.StartNew();
             while (stopwatch.ElapsedMilliseconds < timeoutMilliseconds)
             {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (!connected()) return null;
                 lock (positionLock)
                 {
-                    if (Enumerable.Range(0,6).All(i=>positionVersions[i]>versions[i]))
+                    if (axes.All(i=>positionVersions[i]>versions[i]))
                     {
                         double[] joints = JointCoordinateMap.ToModel(currentJoints.a);
-                        for(int i=0;i<6;++i) joints[i]=motorJ[i].Angle;
+                        foreach(int i in axes) joints[i]=motorJ[i].Angle;
                         currentJoints=new Joint6D_t(JointCoordinateMap.ToLegacy(joints));
                         return joints;
                     }
                 }
-                await Task.Delay(20);
+                await Task.Delay(20,cancellationToken);
             }
             return null;
         }
@@ -186,8 +198,11 @@ namespace SmallProject.Devices.Arm
                                             target.Any(value => !double.IsFinite(value))))
                 return false;
 
-            double[]? start = await ReadCurrentModelJointsAsync();
-            if (start == null) { JLog.Info("路径启动失败：J1～J6编码器新反馈不完整，请检查节点1～6。"); return false; }
+            double[]? start = await ReadCurrentModelJointsAsync(jointIndices:axes,cancellationToken:cancellationToken);
+            if (start == null) {
+                string axisNames=string.Join("、",axes.Select(i=>$"J{i+1}"));
+                JLog.Info($"路径启动失败：{axisNames}编码器新反馈不完整，请检查对应节点。"); return false;
+            }
             var times = new List<double>();
             double[] previous = JointCoordinateMap.ToLegacy(start);
             foreach (var target in legacyTargets) { times.Add(CalculateMoveTime(previous,target)); previous=target; }

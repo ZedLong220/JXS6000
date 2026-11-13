@@ -27,6 +27,7 @@ namespace SmallProject.WindowController
             M = m;
             m.bt_ApplyHomePosition.Click += Bt_ApplyHomePosition_Click; ;
             m.bt_MoveJoint.Click += Bt_MoveJoint_Click;
+            m.bt_MoveSingleAxis.Click += Bt_MoveSingleAxis_Click;
             m.bt_StopNow.Click += Bt_StopNow_Click;
             m.bt_ConnectAi.Click += Bt_ConnectAi_Click;
             m.bt_AddRecord.Click += Bt_AddRecord_Click;
@@ -182,7 +183,7 @@ namespace SmallProject.WindowController
             loopCancellation = new CancellationTokenSource();
             CancellationToken token = loopCancellation.Token;
             M.bt_MoveLoop.IsEnabled = false;
-            M.bt_MoveFivePath.IsEnabled = M.bt_MoveJoint.IsEnabled = false;
+            M.bt_MoveSingleAxis.IsEnabled = M.bt_MoveFivePath.IsEnabled = M.bt_MoveJoint.IsEnabled = false;
             M.bt_MoveLoopStop.IsEnabled = true;
             M.bt_AddRecord.IsEnabled = false;
             M.bt_DeleteRecord.IsEnabled = false;
@@ -262,7 +263,7 @@ namespace SmallProject.WindowController
                 loopCancellation = null;
                 bool connected = App.Core.Serial.IsOpen;
                 M.bt_MoveLoop.IsEnabled = connected;
-                M.bt_MoveFivePath.IsEnabled = M.bt_MoveJoint.IsEnabled = connected;
+                M.bt_MoveSingleAxis.IsEnabled = M.bt_MoveFivePath.IsEnabled = M.bt_MoveJoint.IsEnabled = connected;
                 M.bt_MoveLoopStop.IsEnabled = false;
                 M.bt_AddRecord.IsEnabled = connected;
                 M.bt_DeleteRecord.IsEnabled = connected;
@@ -318,7 +319,7 @@ namespace SmallProject.WindowController
             bool repeat=M.cb_RepeatFivePath.IsChecked==true;
             loopRunning=true; loopCancellation=new CancellationTokenSource();
             var token=loopCancellation.Token;
-            M.bt_MoveFivePath.IsEnabled=M.bt_MoveLoop.IsEnabled=M.bt_MoveJoint.IsEnabled=false;
+            M.bt_MoveSingleAxis.IsEnabled=M.bt_MoveFivePath.IsEnabled=M.bt_MoveLoop.IsEnabled=M.bt_MoveJoint.IsEnabled=false;
             M.bt_AddRecord.IsEnabled=M.bt_DeleteRecord.IsEnabled=false;
             M.bt_MoveLoopStop.IsEnabled=true;
             try
@@ -346,19 +347,35 @@ namespace SmallProject.WindowController
             {
                 loopRunning=false; loopCancellation?.Dispose(); loopCancellation=null;
                 bool connected=App.Core.Serial.IsOpen;
-                M.bt_MoveFivePath.IsEnabled=M.bt_MoveLoop.IsEnabled=M.bt_MoveJoint.IsEnabled=connected;
+                M.bt_MoveSingleAxis.IsEnabled=M.bt_MoveFivePath.IsEnabled=M.bt_MoveLoop.IsEnabled=M.bt_MoveJoint.IsEnabled=connected;
                 M.bt_AddRecord.IsEnabled=M.bt_DeleteRecord.IsEnabled=connected;
                 M.bt_MoveLoopStop.IsEnabled=false;
             }
         }
 
         //运动机械臂
-        private async void Bt_MoveJoint_Click(object sender, System.Windows.RoutedEventArgs e)
+        private async void Bt_MoveJoint_Click(object sender, System.Windows.RoutedEventArgs e) => await MoveToTargetAsync(false);
+
+        private async void Bt_MoveSingleAxis_Click(object sender, System.Windows.RoutedEventArgs e) => await MoveToTargetAsync(true);
+
+        private async Task MoveToTargetAsync(bool singleAxis)
         {
-            if (loopRunning || !M.JykerKinematicContrl.TryReadModelJoints(out var angles)) return;
+            if (loopRunning) return;
+            if (!App.Core.Serial.IsOpen) { JLog.Info("请先连接机械臂。"); return; }
+            int[]? axes=null;
+            double[] angles;
+            if(singleAxis) {
+                int axis=M.cb_SingleAxis.SelectedIndex;
+                if(!M.JykerKinematicContrl.TryReadModelJoint(axis,out double target)) return;
+                axes=new[]{axis};
+                angles=JointCoordinateMap.ToModel(App.Core.Jyker.currentJoints.a);
+                angles[axis]=target;
+                JLog.Info($"单轴运动：J{axis+1}到{target:F3}°，只等待节点{axis+1}编码器；其他关节按最近位置（首次0°）检查碰撞。");
+            }
+            else if(!M.JykerKinematicContrl.TryReadModelJoints(out angles)) return;
             loopRunning=true; loopCancellation=new CancellationTokenSource();
             var token=loopCancellation.Token;
-            M.bt_MoveJoint.IsEnabled = false;
+            M.bt_MoveSingleAxis.IsEnabled = M.bt_MoveJoint.IsEnabled = false;
             M.bt_MoveFivePath.IsEnabled=M.bt_MoveLoop.IsEnabled=false;
             M.bt_MoveLoopStop.IsEnabled=true;
             try
@@ -366,16 +383,20 @@ namespace SmallProject.WindowController
                 if (!App.Core.Serial.IsOpen) { JLog.Info("请先连接机械臂。"); return; }
                 long version=App.Core.Serial.ControllerStatusVersion, completion=App.Core.Serial.ControllerCompletionCount;
                 if(!await App.Core.Jyker.QueueContinuousPathAsync(new[]{JointCoordinateMap.ToLegacy(angles)},
-                    samples=>M.JykerPreviewContrl.ValidatePathAsync(samples,token),false,token)) return;
+                    samples=>M.JykerPreviewContrl.ValidatePathAsync(samples,token),false,token,jointIndices:axes)) return;
                 if(!await WaitForMovementCompletionAsync(version,completion,token)) return;
-                var actual=await App.Core.Jyker.ReadCurrentModelJointsAsync();
-                if(actual!=null) M.JykerKinematicContrl.ApplyModelJoints(actual);
+                var actual=await App.Core.Jyker.ReadCurrentModelJointsAsync(jointIndices:axes,cancellationToken:token);
+                if(actual!=null) {
+                    M.JykerKinematicContrl.ApplyModelJoints(actual);
+                    if(singleAxis) JLog.Info($"J{axes![0]+1}单轴运动完成，编码器位置{actual[axes[0]]:F3}°。");
+                }
+                else JLog.Info("运动已完成，但刷新编码器位置超时。");
             }
             catch(OperationCanceledException) { }
             catch(Exception ex) { App.Core.Jyker.StopNow(); JLog.Error(ex); }
             finally {
                 loopRunning=false; loopCancellation?.Dispose(); loopCancellation=null;
-                M.bt_MoveJoint.IsEnabled=M.bt_MoveFivePath.IsEnabled=M.bt_MoveLoop.IsEnabled=App.Core.Serial.IsOpen;
+                M.bt_MoveSingleAxis.IsEnabled=M.bt_MoveJoint.IsEnabled=M.bt_MoveFivePath.IsEnabled=M.bt_MoveLoop.IsEnabled=App.Core.Serial.IsOpen;
                 M.bt_MoveLoopStop.IsEnabled=false;
             }
         }
