@@ -31,6 +31,7 @@ export function createRobotSafetyGuard(robot, { allowedCollisionPairs = [], geom
 
     if (!bodies.has(link)) bodies.set(link, { name: link.name, link, meshes: [], box: new Box3() });
     const geometry = mesh.geometry;
+    if (!geometry.boundingBox) geometry.computeBoundingBox();
     if (!trees.has(geometry)) {
       const tree = new MeshBVH(geometry);
       geometry.boundsTree = tree;
@@ -52,17 +53,20 @@ export function createRobotSafetyGuard(robot, { allowedCollisionPairs = [], geom
     for (const body of bodyList) {
       body.box.makeEmpty();
       for (const item of body.meshes) {
-        item.box.makeEmpty();
-        const positions = item.geometry.attributes.position;
-        for (let index = 0; index < positions.count; index += 1) {
-          point.fromBufferAttribute(positions, index).applyMatrix4(item.mesh.matrixWorld);
-          item.box.expandByPoint(point);
+        // Transform eight cached local box corners for broad-phase rejection.
+        // This box encloses the mesh; surface collisions still use the BVH.
+        item.box.copy(item.geometry.boundingBox).applyMatrix4(item.mesh.matrixWorld);
+        if (body.name !== 'base_link' && item.box.min.y < -GROUND_TOLERANCE) {
+          // A rotated box can extend below every real vertex. Retain the exact
+          // vertex test near the ground so the conservative box cannot reject
+          // a valid pose or change the existing ground tolerance.
+          const positions = item.geometry.attributes.position;
+          for (let index = 0; index < positions.count; index += 1) {
+            point.fromBufferAttribute(positions, index).applyMatrix4(item.mesh.matrixWorld);
+            if (point.y < -GROUND_TOLERANCE) return { type: 'ground', body: body.name };
+          }
         }
         body.box.union(item.box);
-      }
-      // The stationary base is allowed to rest on the ground plane.
-      if (body.name !== 'base_link' && body.box.min.y < -GROUND_TOLERANCE) {
-        return { type: 'ground', body: body.name };
       }
     }
 

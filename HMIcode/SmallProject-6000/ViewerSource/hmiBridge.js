@@ -38,7 +38,10 @@ export function validatePath(robot, names, points, guard) {
       const a = points[Math.max(0,i-1)], b = points[i];
       if (!valid(a) || !valid(b)) return { ok: false, reason: '连续路径超出 URDF 限位' };
       const steps = Math.max(1,Math.ceil(Math.max(...b.map((v,j)=>Math.abs(v-a[j])))/.25));
-      for (let k=0;k<=steps;k++) {
+      // The previous interval already checked its end (= this interval's
+      // start). Keep every distinct sample and all .25-degree subdivisions.
+      if (i>0 && a.every((v,j)=>v===b[j])) continue;
+      for (let k=i===0?steps:1;k<=steps;k++) {
         names.forEach((name,j)=>robot.joints[name].setJointValue(MathUtils.degToRad(a[j]+(b[j]-a[j])*k/steps)));
         const violation = guard();
         if (violation) return { ok:false, reason:`连续曲线 J2=${(a[1]+(b[1]-a[1])*k/steps).toFixed(3)}°、J3=${(a[2]+(b[2]-a[2])*k/steps).toFixed(3)}°附近` +

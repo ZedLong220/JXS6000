@@ -1,8 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { BoxGeometry, Group, Mesh } from 'three';
+import { BoxGeometry, BufferGeometry, Float32BufferAttribute, Group, Mesh, MathUtils } from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { createRobotSafetyGuard } from '../robotSafety.js';
+import { createReferenceGuard } from './helpers/referenceGuard.js';
+import { loadFixture } from './helpers/modelFixture.js';
+import { JXS6000_SAFETY_OPTIONS } from '../robotConfig.js';
 
 function fixture() {
   const robot = new Group();
@@ -56,4 +59,33 @@ test('mating surfaces on adjacent links do not lock their joint', () => {
   const { robot, shoulder } = fixture();
   shoulder.children.find(child => child.isMesh).position.set(.5, -2, 0);
   assert.equal(createRobotSafetyGuard(robot)(), null);
+});
+
+test('rotated conservative box below ground does not reject an above-ground triangle', () => {
+  const robot = new Group(), link = new Group();
+  robot.name = 'base_link'; link.name = 'moving'; robot.add(link);
+  robot.links = { base_link:robot, moving:link };
+  const geometry = new BufferGeometry();
+  geometry.setAttribute('position',new Float32BufferAttribute([0,1,0, 1,0,0, 1,1,0],3));
+  const mesh = new Mesh(geometry); mesh.rotation.z=Math.PI/4; mesh.position.y=-.5; link.add(mesh);
+  const guard = createRobotSafetyGuard(robot);
+  assert.equal(guard(),null);
+  link.position.y=-.3;
+  assert.deepEqual(guard(),{type:'ground',body:'moving'});
+});
+
+test('optimized bounds preserve reference collision results throughout the JXS6000 joint ranges', () => {
+  const {robot,joints} = loadFixture();
+  const guard = createRobotSafetyGuard(robot,JXS6000_SAFETY_OPTIONS);
+  const reference = createReferenceGuard(robot,JXS6000_SAFETY_OPTIONS);
+  const poses = [];
+  for(const j2 of [-250,-90,0,90,180]) for(const j3 of [-180,-130,-40,0,10,40,90,150,240,330])
+    poses.push([0,j2,j3,0,0,0]);
+  for(let i=0;i<80;i++) poses.push([
+    -180+(i*137)%361, -250+(i*73)%431, -180+(i*113)%511,
+    -50+(i*29)%191, -90+(i*97)%451, -180+(i*53)%361]);
+  for(const q of poses) {
+    q.forEach((value,i)=>joints[`joint_${i+1}`].setJointValue(MathUtils.degToRad(value)));
+    assert.deepEqual(guard(),reference(),`pose ${q.join(',')}`);
+  }
 });

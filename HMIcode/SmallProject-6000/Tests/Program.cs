@@ -171,6 +171,10 @@ try { ContinuousPathPlanner.Build(model,new double[6],new[]{new double[]{0,0,0,0
 catch(ArgumentException) {rejected=true;}
 Check(rejected,"J6 outside -180..180 is rejected");
 var sixHost=MultiAxisProtocol.Encode(six,new[]{0,1,2,3,4,5},false);
+Check(six.ValidationPaths().Count()==1,"Full curve covers its identical first-pass prefix without a second validation");
+var distinctFirstPass=new ContinuousPathPlanner.Plan {
+    Samples=new(){new double[6]}, FirstSamples=new(){new double[]{0,0,.5,0,0,0}} };
+Check(distinctFirstPass.ValidationPaths().Count()==2,"A different first-pass curve is still validated separately");
 Check(sixHost[0].Data.SequenceEqual(new byte[]{4,63}),"Protocol 4 selects all six axes");
 Check(sixHost.Count(c=>c.Code==0x53)==six.Segments.Count*12,"All six targets and velocities are encoded");
 Check(sixHost.Where(c=>c.Code==0x53).Any(c=>c.Data[0]==6),"Node6 receives its own target");
@@ -182,6 +186,7 @@ for(int axis=0;axis<6;++axis) {
     var single=ContinuousPathPlanner.Build(model,new double[6],new[]{singleTarget},new[]{1.0},
         new[]{sixScale[axis]},false,jointIndices:new[]{axis});
     var singleHost=MultiAxisProtocol.Encode(single,new[]{axis},false);
+    Check(single.ValidationPaths().Count()==1,$"J{axis+1} identical single move is checked once");
     Check(singleHost[0].Data.SequenceEqual(new byte[]{4,(byte)(1<<axis)}),$"J{axis+1} single-axis mask");
     Check(singleHost.Where(c=>c.Code==0x51 || c.Code==0x53).All(c=>c.Data[0]==axis+1),
         $"J{axis+1} is the only node receiving start, target and velocity");

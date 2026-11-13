@@ -15,6 +15,7 @@ namespace SmallProject.Diagnostics
         {
             int passed = 0;
             string? error = null;
+            var validationTimings=new System.Collections.Generic.List<object>();
             void Check(bool ok, string text) { if (!ok) throw new InvalidOperationException(text); passed++; }
             try
             {
@@ -70,6 +71,16 @@ namespace SmallProject.Diagnostics
                     new[]{new double[]{.5,-.5,.5,.5,.5,30},new double[]{-.5,-.5,-.5,-.5,-.5,-45},zero},
                     new[]{1.0,1.0,1.0},new[]{30.0/360,-150.0/360,150.0/360,-100.0/360,100.0/360,1.0/360},false);
                 Check((await preview.ValidatePathAsync(fivePlan.Samples)).ok,"Six-axis rounded wire curve passes WebView validation");
+                foreach(double angle in new[]{10.0,150.0}) {
+                    var target=new double[]{0,0,angle,0,0,0};
+                    var watch=System.Diagnostics.Stopwatch.StartNew();
+                    var single=ContinuousPathPlanner.Build(App.Core.Jyker.dof6Solver.Model,zero,new[]{target},
+                        new[]{30.0},new[]{150.0/360},false,jointIndices:new[]{2});
+                    long planned=watch.ElapsedMilliseconds;
+                    foreach(var samples in single.ValidationPaths())
+                        Check((await preview.ValidatePathAsync(samples)).ok,$"Actual WebView accepts the J3 {angle} degree path");
+                    validationTimings.Add(new{angle,samples=single.Samples.Count,planningMs=planned,collisionMs=watch.ElapsedMilliseconds-planned});
+                }
                 Check(window.cb_SingleAxis.SelectedIndex==2 && !window.bt_MoveSingleAxis.IsEnabled,
                     "Single-axis selector defaults to J3 and motion is disabled while disconnected");
                 string savedJ1=window.tb_Joint1.Text,savedJ3=window.tb_Joint3.Text;
@@ -165,7 +176,7 @@ namespace SmallProject.Diagnostics
                 Check(JointCoordinateMap.ToModel(App.Core.Jyker.currentJoints.a).All(v=>v==0), "Preview did not change last motor command");
             }
             catch (Exception ex) { error = ex.ToString(); }
-            File.WriteAllText(Path.Combine(AppContext.BaseDirectory,"model-check-result.json"),JsonSerializer.Serialize(new {passed,error},new JsonSerializerOptions {WriteIndented=true}));
+            File.WriteAllText(Path.Combine(AppContext.BaseDirectory,"model-check-result.json"),JsonSerializer.Serialize(new {passed,error,validationTimings},new JsonSerializerOptions {WriteIndented=true}));
             window.RobotPreview.Dispose();
             System.Windows.Application.Current.Shutdown(error==null?0:1);
         }

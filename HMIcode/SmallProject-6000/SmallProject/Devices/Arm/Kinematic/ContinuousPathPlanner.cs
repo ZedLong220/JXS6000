@@ -22,6 +22,16 @@ namespace SmallProject.Devices.Arm.Kinematic
             public List<double[]> Samples = new();
             public List<double[]> FirstSamples = new();
             public double MaximumDeviationMm;
+            public IEnumerable<IReadOnlyList<double[]>> ValidationPaths()
+            {
+                // The full curve also covers the first pass when its samples
+                // are identical to the prefix. A distinct first pass must
+                // still be checked (for example, a different entry velocity).
+                bool covered=FirstSamples.Count<=Samples.Count &&
+                    FirstSamples.Select((q,i)=>q.SequenceEqual(Samples[i])).All(same=>same);
+                if(!covered) yield return FirstSamples;
+                yield return Samples;
+            }
         }
         private const double Steps = 51200;
         private static double RoundStep(float value) => Math.Round((double)(value * (float)Steps), MidpointRounding.AwayFromZero) / Steps;

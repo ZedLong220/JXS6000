@@ -6,6 +6,19 @@ import { JXS6000_SAFETY_OPTIONS } from '../robotConfig.js';
 import { validateMotion, validatePath } from '../hmiBridge.js';
 import fs from 'node:fs';
 
+test('path validation visits every distinct point and subdivision once', () => {
+  const {robot}=loadFixture();
+  const names=Array.from({length:6},(_,i)=>`joint_${i+1}`);
+  const point=angle=>[0,0,angle,0,0,0];
+  const checked=[];
+  const guard=()=>{checked.push(robot.joints.joint_3.angle*180/Math.PI); return null;};
+  assert.equal(validatePath(robot,names,[point(0),point(0),point(.5),point(.5),point(.75)],guard).ok,true);
+  assert.deepEqual(checked,[0,.25,.5,.75]);
+  const blocked=()=>Math.abs(robot.joints.joint_3.angle*180/Math.PI-.25)<1e-8
+    ? {type:'self',bodyA:'base_link',bodyB:'link_3'} : null;
+  assert.equal(validatePath(robot,names,[point(0),point(.5)],blocked).ok,false);
+});
+
 test('all six axes including physical J6 follow the actual rounded curve', () => {
   const samples=JSON.parse(fs.readFileSync(new URL('../../Tests/bin/Debug/net10.0/six-axis-samples.json',import.meta.url),'utf8'));
   const {robot}=loadFixture();

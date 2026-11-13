@@ -198,11 +198,13 @@ namespace SmallProject.Devices.Arm
                                             target.Any(value => !double.IsFinite(value))))
                 return false;
 
+            var preparation=Stopwatch.StartNew();
             double[]? start = await ReadCurrentModelJointsAsync(jointIndices:axes,cancellationToken:cancellationToken);
             if (start == null) {
                 string axisNames=string.Join("、",axes.Select(i=>$"J{i+1}"));
                 JLog.Info($"路径启动失败：{axisNames}编码器新反馈不完整，请检查对应节点。"); return false;
             }
+            long readMilliseconds=preparation.ElapsedMilliseconds;
             var times = new List<double>();
             double[] previous = JointCoordinateMap.ToLegacy(start);
             foreach (var target in legacyTargets) { times.Add(CalculateMoveTime(previous,target)); previous=target; }
@@ -215,13 +217,16 @@ namespace SmallProject.Devices.Arm
                     jointIndices:axes);
             }
             catch (ArgumentException ex) { JLog.Info("路径规划失败："+ex.Message); return false; }
-            foreach (var samples in new[] { plan.FirstSamples, plan.Samples })
+            long plannedMilliseconds=preparation.ElapsedMilliseconds;
+            JLog.Info("正在检查运动路径…");
+            foreach (var samples in plan.ValidationPaths())
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 var validation = await validatePath(samples);
                 if (!validation.ok) { JLog.Info("实际连续曲线检查失败："+validation.reason); return false; }
             }
             cancellationToken.ThrowIfCancellationRequested();
+            JLog.Info($"路径准备完成：编码器 {readMilliseconds}ms，规划 {plannedMilliseconds-readMilliseconds}ms，碰撞检查 {preparation.ElapsedMilliseconds-plannedMilliseconds}ms。");
             var commands = MultiAxisProtocol.Encode(plan,axes,repeat)
                 .Select(command=>SlcanParser.ParseSlcanFrameStr(0,command.Code,command.Data)).ToList();
             bool accepted = await App.Core.Serial.SendBatchAndWaitForAckAsync(commands,cancellationToken);
