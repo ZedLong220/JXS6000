@@ -13,6 +13,7 @@ namespace SmallProject.WindowController
     {
         private readonly MainWindow window;
         private bool solving;
+        private bool updatingJointInputs;
         public JykerKinematicContrl(MainWindow window)
         {
             this.window = window;
@@ -20,12 +21,47 @@ namespace SmallProject.WindowController
             window.bt_IK.Click += async (_, _) => await CalculateInverseAsync();
             window.bt_GetCurrentAngle.Click += (_, _) => ShowCurrentPosition();
             ApplyModelJoints(JointCoordinateMap.ToModel(App.Core.Jyker.prepareJoints.a));
+            for (int i=0;i<6;i++)
+            {
+                int axis=i;
+                JointInputs[i].TextChanged += (_, _) =>
+                {
+                    if (!updatingJointInputs) MotionSelections[axis].IsChecked=true;
+                };
+            }
+        }
+        public int[] SelectedMotionAxes => Enumerable.Range(0,6)
+            .Where(i=>MotionSelections[i].IsChecked==true).ToArray();
+
+        public bool TryReadMotionTargets(int[] axes, out double[] angles)
+        {
+            angles=JointCoordinateMap.ToModel(App.Core.Jyker.currentJoints.a);
+            if (axes.Length==0)
+            {
+                JLog.Info("请修改目标角度或勾选至少一个参与运动的关节。");
+                return false;
+            }
+            foreach (int axis in axes)
+            {
+                if (!TryReadModelJoint(axis,out double target)) return false;
+                angles[axis]=target;
+            }
+            return true;
         }
         public bool TryReadModelJoints(out double[] angles)
         {
             if (!TryReadValues(JointInputs, "关节角度", out angles)) return false;
             if (App.Core.Jyker.dof6Solver.Model.WithinLimits(angles)) return true;
             JLog.Info("关节角度超出 URDF 模型限位。");
+            return false;
+        }
+        public bool TryReadPathTolerance(out double toleranceMm)
+        {
+            toleranceMm=0;
+            if(!TryReadValues(new[]{window.tb_PathTolerance},"圆滑范围",out var values)) return false;
+            toleranceMm=values[0];
+            if(toleranceMm>=1 && toleranceMm<=50) return true;
+            JLog.Info("圆滑范围请输入1～50mm；越大越平滑，但会绕过点位，精度优先可设1mm。");
             return false;
         }
         public bool TryReadModelJoint(int index, out double angle)
@@ -50,7 +86,9 @@ namespace SmallProject.WindowController
                 !arm.dof6Solver.Model.WithinLimits(q)) return false;
             arm.prepareJoints = new Joint6D_t(JointCoordinateMap.ToLegacy(q));
             arm.preparePose6D = arm.dof6Solver.Model.Forward(q);
-            ShowValues(JointInputs, q);
+            updatingJointInputs=true;
+            try { ShowValues(JointInputs, q); }
+            finally { updatingJointInputs=false; }
             var p = arm.preparePose6D;
             ShowValues(PoseInputs, new[] {p.X,p.Y,p.Z,p.A,p.B,p.C});
             if (updatePreview) window.JykerPreviewContrl.SetJoints(q);
@@ -73,13 +111,15 @@ namespace SmallProject.WindowController
                 });
                 if (!answer.ok) { JLog.Info("六轴模式未找到满足限位的逆解，请调整目标位置和姿态。"); return false; }
                 ApplyModelJoints(answer.q);
-                JLog.Info("URDF 逆解完成；已更新预览，尚未发送电机指令。");
+                foreach (var selection in MotionSelections) selection.IsChecked=true;
+                JLog.Info("URDF 逆解完成；已更新预览并勾选六轴，尚未发送电机指令。可取消不需要运动的轴。");
                 return true;
             }
             finally { solving = false; window.bt_IK.IsEnabled = true; }
         }
         public void ShowCurrentPosition() => ApplyModelJoints(JointCoordinateMap.ToModel(App.Core.Jyker.currentJoints.a));
         private TextBox[] JointInputs => new[] { window.tb_Joint1,window.tb_Joint2,window.tb_Joint3,window.tb_Joint4,window.tb_Joint5,window.tb_Joint6 };
+        private CheckBox[] MotionSelections => new[] { window.cb_MoveJ1,window.cb_MoveJ2,window.cb_MoveJ3,window.cb_MoveJ4,window.cb_MoveJ5,window.cb_MoveJ6 };
         private TextBox[] PoseInputs => new[] { window.tb_X,window.tb_Y,window.tb_Z,window.tb_A,window.tb_B,window.tb_C };
         private static bool TryReadValues(TextBox[] inputs, string description, out double[] values)
         {

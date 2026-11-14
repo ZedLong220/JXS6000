@@ -163,8 +163,10 @@ void OnCanCmd(uint8_t _cmd, uint8_t* _data, uint32_t _len)
         if (boardConfig.canNodeId<1U || boardConfig.canNodeId>6U ||
             !(_data[3] & (1U<<(boardConfig.canNodeId-1U)))) return;
         uint16_t id=(uint16_t)(_data[6]|((uint16_t)_data[7]<<8));
-        if ((_data[3]&~0x3FU)!=0U || !motor.controller->CanStartBufferedPath(path.blocks[0].p0)) {
-            path.Fail(2); return;
+        if ((_data[3]&~0x3FU)!=0U) { path.Fail(BufferedPath::ErrorInvalidCurve); return; }
+        uint8_t startError=motor.controller->BufferedPathStartError(path.blocks[0].p0);
+        if (startError!=BufferedPath::ErrorNone) {
+            path.Fail(startError); return;
         }
         if (path.Start(_data[4],id,_data[5]!=0U)) {
             queuedTrajectoryValid=false;

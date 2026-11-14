@@ -24,7 +24,8 @@ namespace SmallProject.Dialogs
         {
             InitializeComponent();
             //加载配置项
-            this.DataContext = App.JConfig;
+            this.DataContext = Newtonsoft.Json.JsonConvert.DeserializeObject<JConfiguration>(
+                Newtonsoft.Json.JsonConvert.SerializeObject(App.JConfig));
             this.Loaded += ConfigDialog_Loaded;
         }
 
@@ -35,9 +36,18 @@ namespace SmallProject.Dialogs
 
         private void EnterOK_Click(object sender, RoutedEventArgs e)
         {
-            var conf = App.JConfig;
-            ConfigResposity.WriteConfigs(conf);
-            Rubyer.MessageBoxR.Success("保存成功。");
+            if(App.Core.Jyker.IsPathBusy || App.Core.Serial.ControllerState!=0 ||
+                (Application.Current.MainWindow is MainWindow main && main.JykerMoveContrl?.IsBusy==true))
+            {
+                Rubyer.MessageBoxR.Warning("请先停止运动或记录，再应用参数。");
+                return;
+            }
+            var conf = (JConfiguration)DataContext;
+            if(!conf.TryValidateMotion(out string error)) { Rubyer.MessageBoxR.Warning(error); return; }
+            try { ConfigResposity.WriteConfigs(conf); }
+            catch(Exception ex) { Rubyer.MessageBoxR.Warning("保存失败："+ex.Message); return; }
+            App.JConfig=conf;
+            Rubyer.MessageBoxR.Success("保存成功，运动参数将在下一次运动时生效；减速比变更需重启。");
         }
     }
 }

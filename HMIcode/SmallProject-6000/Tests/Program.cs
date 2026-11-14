@@ -211,4 +211,137 @@ for(int axis=0;axis<6;++axis) {
             MultiAxisProtocol.Encode(returnPlan,new[]{axis},false).Select(c=>$"{c.Code:X2} {Convert.ToHexString(c.Data)}"));
     }
 }
+// Every nonempty combination must encode only its selected nodes, including
+// explicit zero targets, while retaining the other joints' current positions.
+for(int mask=1;mask<64;mask++) {
+    int[] axes=Enumerable.Range(0,6).Where(i=>(mask&(1<<i))!=0).ToArray();
+    var start=Enumerable.Repeat(.25,6).ToArray();
+    var target=start.ToArray();
+    foreach(int axis in axes) target[axis]=axis%2==0 ? 0 : -.5;
+    var subset=ContinuousPathPlanner.Build(model,start,new[]{target},new[]{1.0},
+        axes.Select(i=>sixScale[i]).ToArray(),false,jointIndices:axes);
+    var commands=MultiAxisProtocol.Encode(subset,axes,false);
+    Check(commands[0].Data.SequenceEqual(new byte[]{4,(byte)mask}),$"Subset {mask:X2} selects the exact axis mask");
+    Check(commands.Where(c=>c.Code==0x51).Select(c=>(int)c.Data[0]).SequenceEqual(axes.Select(i=>i+1)),
+        $"Subset {mask:X2} loads only selected start positions");
+    var ends=commands.Where(c=>c.Code==0x53 && c.Data[1]==0).ToArray();
+    Check(ends.Length==axes.Length && ends.Select(c=>(int)c.Data[0]).SequenceEqual(axes.Select(i=>i+1)),
+        $"Subset {mask:X2} sends no excluded motor targets");
+    Check(ends.All(c=>Math.Abs(BitConverter.ToSingle(c.Data,4)-target[c.Data[0]-1]*sixScale[c.Data[0]-1])<1e-7),
+        $"Subset {mask:X2} preserves zero targets and motor directions");
+    Check(subset.Samples.All(q=>Enumerable.Range(0,6).Where(i=>!axes.Contains(i)).All(i=>q[i]==start[i])),
+        $"Subset {mask:X2} holds excluded joints fixed throughout collision samples");
+}
+// Regression: the recorded J1/J2/J3 loop used to append a duplicate zero
+// endpoint and generated a stationary block at the end of every lap.
+var threeAxes=new[]{0,1,2};
+var recordedTargets=new[]{new double[]{10,10,10,0,0,0},new double[]{-10,-10,30,0,0,0},new double[6],new double[6]};
+var smoothed=ContinuousPathPlanner.Build(model,new double[6],recordedTargets,new[]{2.0,3,4,.05},
+    threeAxes.Select(i=>sixScale[i]).ToArray(),true,toleranceMm:3,jointIndices:threeAxes);
+Check(smoothed.Segments.Count==5,"Three recorded points plus duplicate loop endpoint contain no dwell segment");
+Check(smoothed.Segments.Take(smoothed.Segments.Count-1).All(s=>s.EndVelocity.Any(v=>Math.Abs(v)>1e-5)),
+    "Every non-reversing interior vector corner retains pass-through velocity");
+Check(smoothed.MaximumDeviationMm<=2.7 && smoothed.Samples.All(model.WithinLimits),
+    "Adjustable smoothing retains its geometric allowance and model limits");
+for(int i=0;i<smoothed.Segments.Count;i++) {
+    var s=smoothed.Segments[i];
+    Check(i==0 || !s.End.SequenceEqual(smoothed.Segments[i-1].End),"No repeated stationary endpoint block");
+    foreach(int axis in threeAxes) {
+        var c=s.Controls.Select(q=>q[axis]*sixScale[axis]).ToArray();
+        var v=Enumerable.Range(0,5).Select(k=>5*(c[k+1]-c[k])/s.Duration).ToArray();
+        var a=Enumerable.Range(0,4).Select(k=>4*(v[k+1]-v[k])/s.Duration).ToArray();
+        var j=Enumerable.Range(0,3).Select(k=>3*(a[k+1]-a[k])/s.Duration).ToArray();
+        for(int sample=0;sample<=100;sample++) {
+            double u=sample/100.0;
+            double jerk=j[0]*(1-u)*(1-u)+2*j[1]*u*(1-u)+j[2]*u*u;
+            Check(Math.Abs(jerk)<=50.001,"Actual quantized motor trajectory obeys the jerk limit");
+        }
+    }
+}
+var duplicateInterior=ContinuousPathPlanner.Build(model,new double[6],
+    new[]{new double[6],recordedTargets[0],recordedTargets[0],recordedTargets[1],new double[6]},
+    new[]{.05,2,.05,3,4},threeAxes.Select(i=>sixScale[i]).ToArray(),true,toleranceMm:3,jointIndices:threeAxes);
+Check(duplicateInterior.Segments.Select(s=>s.Duration).SequenceEqual(smoothed.Segments.Select(s=>s.Duration)),
+    "Leading and interior duplicate recordings do not change motion timing");
+rejected=false;
+try { ContinuousPathPlanner.Build(model,new double[6],new[]{new double[6]},new[]{1.0},sixScale,false); }
+catch(ArgumentException) { rejected=true; }
+Check(rejected,"All-identical points do not upload an endless stationary loop");
+File.WriteAllLines(Path.Combine(AppContext.BaseDirectory,"smooth-three-axis-host.txt"),
+    MultiAxisProtocol.Encode(smoothed,threeAxes,true).Select(c=>$"{c.Code:X2} {Convert.ToHexString(c.Data)}"));
+using(var wire=new StreamWriter(Path.Combine(AppContext.BaseDirectory,"smooth-three-axis-wire.txt"))) {
+    string F(float v)=>v.ToString("R",System.Globalization.CultureInfo.InvariantCulture);
+    wire.WriteLine($"3 {smoothed.Segments.Count} 1 "+string.Join(" ",smoothed.Start.Select(F)));
+    foreach(var s in smoothed.Segments) wire.WriteLine(F(s.Duration)+" "+string.Join(" ",s.End.Select(F))+" "+string.Join(" ",s.EndVelocity.Select(F)));
+}
+var fastSettings=new SmallProject.Configs.JConfiguration();
+Check(fastSettings.TryValidateMotion(out _) && fastSettings.Speed==60 &&
+    fastSettings.MotorMaxAcceleration==SmallProject.Configs.JConfiguration.DriverCompatibleMaxAcceleration &&
+    new[]{fastSettings.ReductionJ1,fastSettings.ReductionJ2,fastSettings.ReductionJ3,fastSettings.ReductionJ4,fastSettings.ReductionJ5,fastSettings.ReductionJ6}
+        .SequenceEqual(new[]{50,100,100,30,30,1}),"Installed ratios and faster motion defaults");
+var installedReductions=new double[]{50,100,100,30,30,1};
+ContinuousPathPlanner.Plan Profile(SmallProject.Configs.JConfiguration settings) {
+    var durations=new List<double>(); var previous=new double[6];
+    foreach(var target in recordedTargets) {
+        durations.Add(MotionTiming.MinimumSeconds(previous,target,installedReductions,threeAxes,settings));
+        previous=target;
+    }
+    return ContinuousPathPlanner.Build(model,new double[6],recordedTargets,durations,
+        threeAxes.Select(i=>MotorCoordinateMap.Direction(i)*installedReductions[i]/360).ToArray(),true,
+        toleranceMm:3,jointIndices:threeAxes,maxVelocity:settings.MotorMaxVelocity,
+        maxAcceleration:settings.MotorMaxAcceleration,maxJerk:settings.MotorMaxJerk);
+}
+var previousSettings=new SmallProject.Configs.JConfiguration {
+    Speed=20,MotorMaxVelocity=4.2,MotorMaxAcceleration=6.25,MotorMaxJerk=50 };
+var slowProfile=Profile(previousSettings);
+var fastProfile=Profile(fastSettings);
+double oldSeconds=slowProfile.Segments.Sum(s=>(double)s.Duration),fastSeconds=fastProfile.Segments.Sum(s=>(double)s.Duration);
+Check(fastSeconds<oldSeconds*.6,"The same recorded loop is materially faster with the installed ratios");
+var reportedTargets=new[]{new double[]{50,20,40,0,0,0},new double[]{20,-20,60,0,0,0},new double[6]};
+var reportedTimes=new List<double>();
+var reportedPrevious=new double[6];
+foreach(var target in reportedTargets.Concat(new[]{new double[6]})) {
+    reportedTimes.Add(MotionTiming.MinimumSeconds(reportedPrevious,target,installedReductions,threeAxes,fastSettings));
+    reportedPrevious=target;
+}
+var reportedLoop=ContinuousPathPlanner.Build(model,new double[6],reportedTargets.Concat(new[]{new double[6]}).ToArray(),
+    reportedTimes,threeAxes.Select(i=>MotorCoordinateMap.Direction(i)*installedReductions[i]/360).ToArray(),true,
+    toleranceMm:20,jointIndices:threeAxes,maxVelocity:fastSettings.MotorMaxVelocity,
+    maxAcceleration:fastSettings.MotorMaxAcceleration,maxJerk:fastSettings.MotorMaxJerk);
+Check(reportedLoop.Segments.Count==5 && reportedLoop.Segments[^1].End.SequenceEqual(reportedLoop.Start),
+    "Reported three-point 20 mm loop is a closed five-block path");
+var reportedHost=MultiAxisProtocol.Encode(reportedLoop,threeAxes,true);
+Check(reportedHost.Count(c=>c.Code==0x54)==5 && reportedHost.Last().Data.SequenceEqual(new byte[]{2}),
+    "Reported five-block loop is completely committed before repeat start");
+File.WriteAllLines(Path.Combine(AppContext.BaseDirectory,"reported-three-point-host.txt"),
+    reportedHost.Select(c=>$"{c.Code:X2} {Convert.ToHexString(c.Data)}"));
+foreach(var segment in fastProfile.Segments) foreach(int axis in threeAxes) {
+    var c=segment.Controls.Select(q=>q[axis]*installedReductions[axis]/360).ToArray();
+    var v=Enumerable.Range(0,5).Select(k=>5*(c[k+1]-c[k])/segment.Duration).ToArray();
+    var a=Enumerable.Range(0,4).Select(k=>4*(v[k+1]-v[k])/segment.Duration).ToArray();
+    var j=Enumerable.Range(0,3).Select(k=>3*(a[k+1]-a[k])/segment.Duration).ToArray();
+    double EvaluateControls(double[] b,double u) { var row=b.ToArray();for(int n=row.Length-1;n>0;n--) for(int k=0;k<n;k++) row[k]=row[k]*(1-u)+row[k+1]*u;return row[0]; }
+    for(int sample=0;sample<=100;sample++) {
+        double u=sample/100.0;
+        Check(Math.Abs(EvaluateControls(v,u))<=15.001 && Math.Abs(EvaluateControls(a,u))<=50.001 &&
+            Math.Abs(EvaluateControls(j,u))<=500.001,"Faster quantized path retains the configured dynamic bounds");
+    }
+}
+var unrelatedTarget=new double[]{0,0,0,0,0,180};
+Check(MotionTiming.MinimumSeconds(new double[6],unrelatedTarget,installedReductions,new[]{0},fastSettings)==.05,
+    "An excluded joint does not slow a selected-axis move");
+foreach(double invalid in new[]{0.0,-1,double.NaN,double.PositiveInfinity,31}) {
+    var bad=new SmallProject.Configs.JConfiguration{MotorMaxVelocity=invalid};
+    Check(!bad.TryValidateMotion(out _),"Invalid motor limits are rejected before planning");
+}
+var excessiveAcceleration=new SmallProject.Configs.JConfiguration{MotorMaxAcceleration=24};
+Check(!excessiveAcceleration.TryValidateMotion(out _),"Acceleration above the verified drive limit is rejected");
+File.WriteAllLines(Path.Combine(AppContext.BaseDirectory,"fast-three-axis-host.txt"),
+    MultiAxisProtocol.Encode(fastProfile,threeAxes,true).Select(c=>$"{c.Code:X2} {Convert.ToHexString(c.Data)}"));
+using(var wire=new StreamWriter(Path.Combine(AppContext.BaseDirectory,"fast-three-axis-wire.txt"))) {
+    string F(float v)=>v.ToString("R",System.Globalization.CultureInfo.InvariantCulture);
+    wire.WriteLine($"3 {fastProfile.Segments.Count} 1 "+string.Join(" ",fastProfile.Start.Select(F)));
+    foreach(var s in fastProfile.Segments) wire.WriteLine(F(s.Duration)+" "+string.Join(" ",s.End.Select(F))+" "+string.Join(" ",s.EndVelocity.Select(F)));
+}
+Console.WriteLine($"Installed-ratio three-point loop: {oldSeconds:F3}s -> {fastSeconds:F3}s ({oldSeconds/fastSeconds:F2}x planned speed)");
 Console.WriteLine($"PASS: {passed} kinematics/planning/protocol checks; six-axis geometric bound {six.MaximumDeviationMm:F4} mm; fixture: six-axis-host.txt");

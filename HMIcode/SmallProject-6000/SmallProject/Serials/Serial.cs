@@ -16,6 +16,9 @@ namespace SmallProject.Serials
 {
     public class Serial
     {
+        private const int ControllerAckTimeoutMilliseconds = 1500;
+        private const int ControllerAckMaxAttempts = 3;
+
         public event Action<float,int,bool>? GripperStatusReceived;
 
         private sealed class OutboundCommand
@@ -184,22 +187,46 @@ namespace SmallProject.Serials
                                 {
                                     lock (acknowledgementLock) pendingAcknowledgement = acknowledgement;
                                 }
-                                stream.Write(text);
-                                JLog.Info($"TX {text.TrimEnd('\r', '\n')}");
                                 if (!requiresControllerAck)
                                 {
+                                    stream.Write(text);
+                                    JLog.Info($"TX {text.TrimEnd('\r', '\n')}");
                                     await Task.Delay(20);
                                     continue;
                                 }
                                 try
                                 {
-                                    accepted = await acknowledgement!.Completion.Task.WaitAsync(TimeSpan.FromMilliseconds(1500));
-                                }
-                                catch (TimeoutException)
-                                {
                                     accepted = false;
-                                    Interlocked.Exchange(ref transportFaulted, 1);
-                                    JLog.Info($"串口命令确认超时，已暂停发送以避免确认错位: {text.TrimEnd('\r', '\n')}");
+                                    for (int attempt = 1; attempt <= ControllerAckMaxAttempts; ++attempt)
+                                    {
+                                        stream.Write(text);
+                                        JLog.Info($"TX {text.TrimEnd('\r', '\n')}{(attempt > 1 ? $"（重试 {attempt - 1}/{ControllerAckMaxAttempts - 1}）" : string.Empty)}");
+                                        try
+                                        {
+                                            accepted = await acknowledgement!.Completion.Task.WaitAsync(
+                                                TimeSpan.FromMilliseconds(ControllerAckTimeoutMilliseconds));
+                                            if (accepted && attempt > 1)
+                                                JLog.Info($"串口命令重试成功: {text.TrimEnd('\r', '\n')}");
+                                            break;
+                                        }
+                                        catch (TimeoutException) when (attempt < ControllerAckMaxAttempts)
+                                        {
+                                            JLog.Info($"串口命令未收到确认，正在重试 {attempt}/{ControllerAckMaxAttempts - 1}: {text.TrimEnd('\r', '\n')}");
+                                        }
+                                        catch (TimeoutException)
+                                        {
+                                            if (acknowledgement!.Completion.Task.IsCompletedSuccessfully)
+                                            {
+                                                accepted = acknowledgement.Completion.Task.Result;
+                                            }
+                                            else
+                                            {
+                                                accepted = false;
+                                                Interlocked.Exchange(ref transportFaulted, 1);
+                                                JLog.Info($"串口命令连续 {ControllerAckMaxAttempts} 次未收到确认，已暂停发送: {text.TrimEnd('\r', '\n')}");
+                                            }
+                                        }
+                                    }
                                 }
                                 finally
                                 {
@@ -284,13 +311,15 @@ namespace SmallProject.Serials
                             string[] controllerErrors = {
                                 "无", "CAN轨迹下发失败", "驱动板编码器反馈超时",
                                 "驱动板未在规定时间内到位", "连续路径协议不匹配或装载确认超时",
-                                "驱动路径故障（心跳、限位、堵转或参数检查失败）", "路径起点与编码器位置不一致"
+                                "驱动路径故障（详见故障轴与驱动原因）", "路径起点与编码器位置不一致"
                             };
                             int state = aFrame.Data[0];
                             int error = aFrame.Data[1];
                             Volatile.Write(ref controllerState, state);
                             Volatile.Write(ref controllerError, error);
-                            if (aFrame.Data.Length >= 6)
+                            bool hasDriveFault = state == 7 && error == 5 && aFrame.Data.Length >= 6 &&
+                                                 aFrame.Data[4] >= 1 && aFrame.Data[4] <= 6;
+                            if (aFrame.Data.Length >= 6 && !hasDriveFault)
                             {
                                 Volatile.Write(ref controllerPathCount, aFrame.Data[4]);
                                 Volatile.Write(ref controllerPathIndex,
@@ -317,7 +346,19 @@ namespace SmallProject.Serials
                             string capabilities = aFrame.Data.Length >= 8
                                 ? $"，参与轴=0x{aFrame.Data[6]:X2}，协议={aFrame.Data[7]}（bit0～5=J1～J6）"
                                 : string.Empty;
-                            JLog.Info($"主控状态：{stateText}，错误：{errorText}，在线轴=0x{aFrame.Data[2]:X2}，运动轴=0x{aFrame.Data[3]:X2}{capabilities}");
+                            string driveFault = string.Empty;
+                            if (hasDriveFault)
+                            {
+                                string[] driveReasons = {
+                                    "未提供原因", "路径心跳超时", "安全联锁触发", "曲线参数或首尾连续性无效",
+                                    "轨迹执行器供数不及时", "编码器未校准", "电机堵转", "驱动已失能",
+                                    "驱动处于刹车状态", "限位输入有效", "路径起点与编码器相差超过0.02圈"
+                                };
+                                int detail = aFrame.Data[5];
+                                string reason = detail < driveReasons.Length ? driveReasons[detail] : $"未知驱动错误{detail}";
+                                driveFault = $"，故障轴=J{aFrame.Data[4]}，驱动原因={reason}";
+                            }
+                            JLog.Info($"主控状态：{stateText}，错误：{errorText}，在线轴=0x{aFrame.Data[2]:X2}，运动轴=0x{aFrame.Data[3]:X2}{driveFault}{capabilities}");
                             break;
                         case 0x57:
                             if(aFrame.Id==0 && aFrame.Data.Length==8 && aFrame.Data[7]==1) {

@@ -11,6 +11,19 @@
 class BufferedPath {
 public:
     static const unsigned Capacity = 32;
+    enum Error : uint8_t {
+        ErrorNone = 0,
+        ErrorHeartbeatTimeout = 1,
+        ErrorSafetyInterlock = 2,
+        ErrorInvalidCurve = 3,
+        ErrorExecutorStarved = 4,
+        ErrorEncoderNotCalibrated = 5,
+        ErrorMotorStalled = 6,
+        ErrorMotorDisabled = 7,
+        ErrorMotorBraked = 8,
+        ErrorLimitActive = 9,
+        ErrorStartPositionMismatch = 10
+    };
     struct Block {
         int32_t p0, p1, v0, v1;
         uint32_t ticks;
@@ -125,10 +138,10 @@ public:
     }
     void Tick() {
         if(state!=2) return;
-        if(++heartbeat>10000U) { Fail(1); return; } // 500 ms CAN watchdog
+        if(++heartbeat>10000U) { Fail(ErrorHeartbeatTimeout); return; } // 500 ms CAN watchdog
         if(waitTicks) { --waitTicks; return; }
         if(remaining==0) {
-            if(tail==head) { Fail(4); return; } // main loop starved
+            if(tail==head) { Fail(ErrorExecutorStarved); return; } // main loop starved
             std::atomic_thread_fence(std::memory_order_acquire);
             Sample s=queue[tail];
             tail=(uint8_t)((tail+1U)%SampleCapacity);

@@ -93,6 +93,12 @@ static void control(uint8_t cmd,const uint8_t *data,uint8_t len)
 {
     rx(cmd,data,len); CAN_DualAxisUpdate();
 }
+static void serial_line(const char *text)
+{
+    while(*text)SerialCmd_OnRxByte((uint8_t)*text++);
+    SerialCmd_OnRxByte('\r');
+    SerialCmd_Process();
+}
 static void goal(uint8_t cmd,float rev,float duration)
 {
     uint8_t data[8]; memcpy(data,&rev,4); memcpy(data+4,&duration,4);
@@ -299,7 +305,7 @@ static void five_axis_protocol(void)
     five_host_start(63);
     five_stage(0,63,1.0f,6); control(0x54,d,2);
     CHECK(last(0x3B)->data[6]==0 && CAN_TrajectoryCount()==0);
-    five_stage(0,63,1.0f,0); now+=1500; control(0x54,d,2);
+    five_stage(0,63,1.0f,0); now+=5000; control(0x54,d,2);
     CHECK(last(0x3B)->data[6]==0 && CAN_TrajectoryCount()==0);
     five_stage(0,63,1.0f,0); d[0]=1; control(0x54,d,2);
     CHECK(last(0x3B)->data[6]==0 && CAN_TrajectoryCount()==0); d[0]=0;
@@ -317,6 +323,15 @@ static void five_axis_protocol(void)
     CAN_DualAxisSetZero();
     for(uint8_t node=1;node<=6;++node)CHECK(occurrences((uint16_t)((node<<7)|0x15))==1);
     for(unsigned i=0;i<count;++i)CHECK((sent[i].id>>7)!=7);
+
+    reset(); five_host_start(7); five_stage(0,7,1.0f,0);
+    serial_line("O");
+    serial_line("t05420000");
+    CHECK(CAN_TrajectoryCount()==1 && last(0x3B)->data[6]==1);
+    serial_line("t05420000");
+    CHECK(CAN_TrajectoryCount()==1 && last(0x3B)->data[6]==1);
+    now+=5001; serial_line("t05420000");
+    CHECK(CAN_TrajectoryCount()==1 && last(0x3B)->data[6]==0);
 }
 static void gripper_commands(void)
 {

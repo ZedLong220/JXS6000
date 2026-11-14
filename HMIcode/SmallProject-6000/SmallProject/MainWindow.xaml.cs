@@ -45,9 +45,6 @@ namespace SmallProject
             InitializeComponent();
             //窗体加载
             this.Loaded += MainWindow_Loaded;
-            //mt_Config 事件监听
-            mt_Config.Click += Mt_Config_Click;
-            mt_MotorConfig.Click += Mt_MotorConfig_Click;
 
         }
         //弹出电机配置页面

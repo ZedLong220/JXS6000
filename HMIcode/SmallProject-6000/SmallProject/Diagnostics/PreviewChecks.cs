@@ -38,6 +38,46 @@ namespace SmallProject.Diagnostics
                 var directionPlan=ContinuousPathPlanner.Build(testArm.dof6Solver.Model,zero,new[]{directionTarget},
                     new[]{2.0},testArm.motorJ.Select(m=>m.Direction*m.Reduction/360).ToArray(),false);
                 Check((await preview.ValidatePathAsync(directionPlan.Samples)).ok,"Reversed motor signs preserve the model collision path");
+                Check(window.JykerKinematicContrl.TryReadPathTolerance(out double defaultTolerance) && defaultTolerance==20,
+                    "Recorded paths default to the visible 20 mm smoothing allowance");
+                foreach(string invalid in new[]{"NaN","0","51","invalid"}) {
+                    window.tb_PathTolerance.Text=invalid;
+                    Check(!window.JykerKinematicContrl.TryReadPathTolerance(out _),"Invalid smoothing allowance is rejected");
+                }
+                var recordedLoop=new[]{new double[]{10,10,10,0,0,0},new double[]{-10,-10,30,0,0,0},zero,zero};
+                foreach(double tolerance in new[]{1.0,20,50}) {
+                    window.tb_PathTolerance.Text=tolerance.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                    Check(window.JykerKinematicContrl.TryReadPathTolerance(out double entered) && entered==tolerance,
+                        "Smoothing input accepts the supported precision range");
+                    var smoothLoop=ContinuousPathPlanner.Build(testArm.dof6Solver.Model,zero,recordedLoop,new[]{2.0,3,4,.05},
+                        testArm.motorJ.Take(3).Select(m=>m.Direction*m.Reduction/360).ToArray(),true,
+                        toleranceMm:tolerance,jointIndices:new[]{0,1,2});
+                    foreach(var curve in smoothLoop.ValidationPaths())
+                        Check((await preview.ValidatePathAsync(curve)).ok,$"Recorded three-point loop passes actual collision checks at {tolerance} mm");
+                }
+                window.tb_PathTolerance.Text="20";
+                Check(App.JConfig.TryValidateMotion(out _),"Saved motion settings are valid");
+                Check(testArm.motorJ.Select(m=>m.Reduction).SequenceEqual(new double[]{50,100,100,30,30,1}),
+                    "The running arm uses the installed six reduction ratios");
+                var settingsDialog=new SmallProject.Dialogs.ConfigDialog();
+                var stagedSettings=(SmallProject.Configs.JConfiguration)settingsDialog.DataContext;
+                Check(!ReferenceEquals(stagedSettings,App.JConfig),"Settings edits are staged until Apply");
+                double savedVelocity=App.JConfig.MotorMaxVelocity;
+                stagedSettings.MotorMaxVelocity=1;
+                Check(App.JConfig.MotorMaxVelocity==savedVelocity,"Editing the dialog cannot change live motion limits");
+                settingsDialog.Close();
+                var installed=new double[]{50,100,100,30,30,1};
+                var fastTimes=new System.Collections.Generic.List<double>();var previousFast=zero;
+                foreach(var target in recordedLoop) {
+                    fastTimes.Add(MotionTiming.MinimumSeconds(previousFast,target,installed,new[]{0,1,2},App.JConfig));
+                    previousFast=target;
+                }
+                var fastLoop=ContinuousPathPlanner.Build(testArm.dof6Solver.Model,zero,recordedLoop,fastTimes,
+                    testArm.motorJ.Take(3).Select(m=>m.Direction*m.Reduction/360).ToArray(),true,
+                    toleranceMm:3,jointIndices:new[]{0,1,2},maxVelocity:App.JConfig.MotorMaxVelocity,
+                    maxAcceleration:App.JConfig.MotorMaxAcceleration,maxJerk:App.JConfig.MotorMaxJerk);
+                foreach(var curve in fastLoop.ValidationPaths())
+                    Check((await preview.ValidatePathAsync(curve)).ok,"The faster recorded loop passes actual collision validation");
                 var queried=new System.Collections.Generic.List<int>();
                 var singlePosition=await testArm.ReadPositionsAsync(node=>{
                     queried.Add(node); testArm.RecievePos(node,.25f,true);
@@ -98,6 +138,85 @@ namespace SmallProject.Diagnostics
                 }
                 Check(window.cb_SingleAxis.SelectedIndex==2 && !window.bt_MoveSingleAxis.IsEnabled,
                     "Single-axis selector defaults to J3 and motion is disabled while disconnected");
+                var selections=new[]{window.cb_MoveJ1,window.cb_MoveJ2,window.cb_MoveJ3,window.cb_MoveJ4,window.cb_MoveJ5,window.cb_MoveJ6};
+                var inputs=new[]{window.tb_Joint1,window.tb_Joint2,window.tb_Joint3,window.tb_Joint4,window.tb_Joint5,window.tb_Joint6};
+                foreach(var selection in selections) selection.IsChecked=false;
+                Check(!window.JykerKinematicContrl.TryReadMotionTargets(Array.Empty<int>(),out _),
+                    "No selected axis cannot initiate movement");
+                for(int mask=1;mask<64;mask++) {
+                    foreach(var selection in selections) selection.IsChecked=false;
+                    for(int axis=0;axis<6;axis++) inputs[axis].Text="invalid";
+                    // Reset after deliberately putting invalid text in excluded fields.
+                    foreach(var selection in selections) selection.IsChecked=false;
+                    int[] axes=Enumerable.Range(0,6).Where(i=>(mask&(1<<i))!=0).ToArray();
+                    foreach(int axis in axes) inputs[axis].Text=axis%2==0 ? "0" : "0.5";
+                    Check(window.JykerKinematicContrl.SelectedMotionAxes.SequenceEqual(axes),
+                        $"Editing targets automatically selects exactly subset {mask:X2}");
+                    Check(window.JykerKinematicContrl.TryReadMotionTargets(axes,out var selectedTargets) &&
+                        axes.All(i=>selectedTargets[i]==(i%2==0 ? 0 : .5)),
+                        $"Subset {mask:X2} accepts zero targets and ignores excluded invalid inputs");
+                    window.JykerKinematicContrl.ApplyModelJoints(zero);
+                    Check(window.JykerKinematicContrl.SelectedMotionAxes.SequenceEqual(axes),
+                        $"Refreshing displayed angles preserves subset {mask:X2}");
+                }
+                window.cb_MoveJ4.IsChecked=false;
+                Check(!window.JykerKinematicContrl.SelectedMotionAxes.Contains(3),"Manual uncheck excludes the joint");
+                foreach(var selection in selections) selection.IsChecked=false;
+                var legacyRecord=Newtonsoft.Json.JsonConvert.DeserializeObject<SmallProject.JointMoveRecord.JointRecordModel>(
+                    "{\"J1\":1,\"J2\":2,\"J3\":3,\"J4\":4,\"J5\":5,\"J6\":6}")!;
+                Check(legacyRecord.AxisMask==63 && legacyRecord.ContainsAxes(Enumerable.Range(0,6).ToArray()),
+                    "Legacy point records without a mask retain all six measured axes");
+                for(int mask=1;mask<64;mask++) {
+                    int[] axes=Enumerable.Range(0,6).Where(i=>(mask&(1<<i))!=0).ToArray();
+                    var recordQueries=new System.Collections.Generic.List<int>();
+                    var measured=await testArm.ReadPositionsAsync(node=>{
+                        recordQueries.Add(node); testArm.RecievePos(node,0,true);
+                    },()=>true,100,axes);
+                    Check(measured!=null && recordQueries.SequenceEqual(axes.Select(i=>i+1)),
+                        $"Point subset {mask:X2} records without querying missing boards");
+                    var record=new SmallProject.JointMoveRecord.JointRecordModel {
+                        AxisMask=mask,J1=0,J2=0,J3=0,J4=0,J5=0,J6=0 };
+                    string json=Newtonsoft.Json.JsonConvert.SerializeObject(record);
+                    var restored=Newtonsoft.Json.JsonConvert.DeserializeObject<SmallProject.JointMoveRecord.JointRecordModel>(json)!;
+                    Check(restored.AxisMask==mask && restored.ContainsAxes(axes) && !json.Contains("RecordedJ1"),
+                        $"Point subset {mask:X2} persists only its data and restores measured axes");
+                    var displays=new[]{restored.RecordedJ1,restored.RecordedJ2,restored.RecordedJ3,
+                        restored.RecordedJ4,restored.RecordedJ5,restored.RecordedJ6};
+                    Check(Enumerable.Range(0,6).All(i=>axes.Contains(i) ? displays[i]==0 : displays[i]==null),
+                        $"Point subset {mask:X2} distinguishes measured zero from unrecorded joints");
+                    Check((restored.RecordedX.HasValue)==(mask==63),
+                        $"Point subset {mask:X2} shows tool pose only with a full measured configuration");
+                    var current=new double[]{.1,.2,.3,.4,.5,.6};
+                    var target=restored.MotionTarget(current,axes);
+                    Check(Enumerable.Range(0,6).All(i=>target[i]==(axes.Contains(i) ? 0 : current[i])),
+                        $"Point subset {mask:X2} replays zero targets while holding excluded joints at the current position");
+                    if(mask!=63) {
+                        int missingAxis=Enumerable.Range(0,6).First(i=>!axes.Contains(i));
+                        bool rejectedMissing=false;
+                        try { restored.MotionTarget(current,new[]{missingAxis}); }
+                        catch(ArgumentException) { rejectedMissing=true; }
+                        Check(!restored.ContainsAxes(new[]{missingAxis}) && rejectedMissing,
+                            $"Point subset {mask:X2} cannot replay an unmeasured cached axis");
+                    }
+                    var planFromRecord=ContinuousPathPlanner.Build(testArm.dof6Solver.Model,current,new[]{target},new[]{1.0},
+                        axes.Select(i=>testArm.motorJ[i].Direction*testArm.motorJ[i].Reduction/360).ToArray(),false,jointIndices:axes);
+                    var frames=MultiAxisProtocol.Encode(planFromRecord,axes,false);
+                    Check(frames[0].Data.SequenceEqual(new byte[]{4,(byte)mask}) &&
+                        frames.Where(c=>c.Code==0x51 || c.Code==0x53).All(c=>axes.Contains(c.Data[0]-1)),
+                        $"Point subset {mask:X2} uploads only participating measured axes");
+                }
+                foreach(int invalidMask in new[]{0,64,-1})
+                    Check(!new SmallProject.JointMoveRecord.JointRecordModel{AxisMask=invalidMask}.ContainsAxes(new[]{0}),
+                        "Malformed point mask cannot authorize an axis");
+                for(int count=2;count<=5;count++) {
+                    int[] axes=Enumerable.Range(1,count).ToArray();
+                    var subsetQueries=new System.Collections.Generic.List<int>();
+                    Check(await testArm.ReadPositionsAsync(node=>{subsetQueries.Add(node);testArm.RecievePos((byte)node,0,true);},
+                        ()=>true,100,axes)!=null && subsetQueries.SequenceEqual(axes.Select(i=>i+1)),
+                        $"{count}-axis feedback waits only for participating nodes");
+                    Check(await testArm.ReadPositionsAsync(node=>{if(node!=axes[^1]+1)testArm.RecievePos((byte)node,0,true);},
+                        ()=>true,60,axes)==null,$"{count}-axis feedback rejects one missing participating node");
+                }
                 string savedJ1=window.tb_Joint1.Text,savedJ3=window.tb_Joint3.Text;
                 window.tb_Joint1.Text="invalid"; window.tb_Joint3.Text="1";
                 Check(window.JykerKinematicContrl.TryReadModelJoint(2,out double singleTarget) && singleTarget==1,

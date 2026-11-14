@@ -37,6 +37,10 @@ namespace SmallProject.Configs
                 {
                     return new JConfiguration();
                 }
+                // Older builds defaulted to 50 r/s2, while the installed drives
+                // reject curves above the verified 23 r/s2 compatibility bound.
+                if (conf.MotorMaxAcceleration > JConfiguration.DriverCompatibleMaxAcceleration)
+                    conf.MotorMaxAcceleration = JConfiguration.DriverCompatibleMaxAcceleration;
                 return conf;
             }
 

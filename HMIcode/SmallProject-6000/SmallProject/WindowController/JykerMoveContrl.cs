@@ -21,6 +21,8 @@ namespace SmallProject.WindowController
         private JykerControlMCP jykerControlMCP;
         private CancellationTokenSource? loopCancellation;
         private bool loopRunning;
+        private bool recording;
+        internal bool IsBusy => loopRunning || recording;
 
         public JykerMoveContrl(MainWindow m)
         {
@@ -83,7 +85,7 @@ namespace SmallProject.WindowController
         //设置当前位置为0位
         private void Bt_ApplyHomePosition_Click(object sender, System.Windows.RoutedEventArgs e)
         {
-            if (loopRunning || App.Core.Serial.ControllerState != 0)
+            if (loopRunning || recording || App.Core.Serial.ControllerState != 0)
             {
                 JLog.Info("请先停止路径并确认电机静止，再设置当前位置为零。");
                 return;
@@ -93,19 +95,33 @@ namespace SmallProject.WindowController
 
         private async void Bt_AddRecord_Click(object sender, System.Windows.RoutedEventArgs e)
         {
+            if (recording) return;
+            if (loopRunning || App.Core.Serial.ControllerState!=0)
+            {
+                JLog.Info("请先停止运动并确认电机静止，再记录点位。");
+                return;
+            }
             if (!App.Core.Serial.IsOpen)
             {
                 JLog.Info("请先连接机械臂，再记录点位。");
                 return;
             }
 
+            int[] axes=M.JykerKinematicContrl.SelectedMotionAxes;
+            if(axes.Length==0)
+            {
+                JLog.Info("请先勾选要记录的J轴；记录读取实际编码器，无需填写目标角度。");
+                return;
+            }
+            string axisNames=string.Join("、",axes.Select(i=>$"J{i+1}"));
+            recording=true;
             M.bt_AddRecord.IsEnabled = false;
             try
             {
-                double[]? joints = await App.Core.Jyker.ReadCurrentModelJointsAsync();
+                double[]? joints = await App.Core.Jyker.ReadCurrentModelJointsAsync(jointIndices:axes);
                 if (joints == null)
                 {
-                    JLog.Info("记录点位失败：未收到J1～J6全部六个编码器的新反馈。");
+                    JLog.Info($"记录点位失败：{axisNames}编码器新反馈不完整，请检查勾选轴对应的驱动板。");
                     return;
                 }
 
@@ -113,6 +129,7 @@ namespace SmallProject.WindowController
                 var record = new JointRecordModel
                 {
                     AddTime = DateTime.Now,
+                    AxisMask = axes.Aggregate(0,(mask,i)=>mask|(1<<i)),
                     J1 = Math.Round(joints[0], 3),
                     J2 = Math.Round(joints[1], 3),
                     J3 = Math.Round(joints[2], 3),
@@ -138,7 +155,7 @@ namespace SmallProject.WindowController
                 M.dg_JointRecord.SelectedItem = record;
                 M.dg_JointRecord.ScrollIntoView(record);
                 M.JykerKinematicContrl.ApplyModelJoints(joints);
-                JLog.Info($"已记录六轴点位：{string.Join(", ",joints.Take(6).Select((v,i)=>$"J{i+1}={v:F3}°"))}。");
+                JLog.Info($"已记录点位：{string.Join(", ",axes.Select(i=>$"J{i+1}={joints[i]:F3}°"))}；未勾选轴未记录。");
             }
             catch (Exception ex)
             {
@@ -147,7 +164,8 @@ namespace SmallProject.WindowController
             }
             finally
             {
-                M.bt_AddRecord.IsEnabled = App.Core.Serial.IsOpen;
+                recording=false;
+                M.bt_AddRecord.IsEnabled = App.Core.Serial.IsOpen && !loopRunning;
             }
         }
 
@@ -172,7 +190,7 @@ namespace SmallProject.WindowController
 
         private async void Bt_MoveLoop_Click(object sender, System.Windows.RoutedEventArgs e)
         {
-            if (loopRunning) return;
+            if (loopRunning || recording) return;
             if (!App.Core.Serial.IsOpen)
             {
                 JLog.Info("请先连接机械臂，再启动固定往返运动。");
@@ -313,10 +331,21 @@ namespace SmallProject.WindowController
 
         private async void Bt_MoveFivePath_Click(object sender, System.Windows.RoutedEventArgs e)
         {
-            if (loopRunning || !App.Core.Serial.IsOpen) return;
+            if (loopRunning || recording || !App.Core.Serial.IsOpen) return;
             var records=App.Core.JointRecords.ToArray();
-            if (records.Length<2) { JLog.Info("请先记录至少两个六轴点位。"); return; }
+            if (records.Length<2) { JLog.Info("请先记录至少两个点位。"); return; }
+            int[] axes=M.JykerKinematicContrl.SelectedMotionAxes;
+            if(axes.Length==0) { JLog.Info("请先勾选参与点位连续运动的J轴。"); return; }
+            int missing=Array.FindIndex(records,r=>!r.ContainsAxes(axes));
+            if(missing>=0)
+            {
+                string missingAxes=string.Join("、",axes.Where(i=>!records[missing].ContainsAxes(new[]{i})).Select(i=>$"J{i+1}"));
+                JLog.Info($"第{missing+1}条点位未记录{missingAxes}的实测位置，请补录点位或取消勾选这些轴。");
+                return;
+            }
+            string axisNames=string.Join("、",axes.Select(i=>$"J{i+1}"));
             bool repeat=M.cb_RepeatFivePath.IsChecked==true;
+            if(!M.JykerKinematicContrl.TryReadPathTolerance(out double toleranceMm)) return;
             loopRunning=true; loopCancellation=new CancellationTokenSource();
             var token=loopCancellation.Token;
             M.bt_MoveSingleAxis.IsEnabled=M.bt_MoveFivePath.IsEnabled=M.bt_MoveLoop.IsEnabled=M.bt_MoveJoint.IsEnabled=false;
@@ -324,24 +353,24 @@ namespace SmallProject.WindowController
             M.bt_MoveLoopStop.IsEnabled=true;
             try
             {
-                var current=await App.Core.Jyker.ReadCurrentModelJointsAsync();
-                if(current==null) { JLog.Info("六轴路径停止：节点1～6编码器反馈不完整。"); return; }
-                var targets=records.Select(r=>new[]{r.J1,r.J2,r.J3,r.J4,r.J5,r.J6}).ToList();
+                var current=await App.Core.Jyker.ReadCurrentModelJointsAsync(jointIndices:axes,cancellationToken:token);
+                if(current==null) { JLog.Info($"点位路径停止：{axisNames}编码器反馈不完整。"); return; }
+                var targets=records.Select(r=>r.MotionTarget(current,axes)).ToList();
                 if(repeat) targets.Add(current.ToArray());
                 long version=App.Core.Serial.ControllerStatusVersion;
                 long completion=App.Core.Serial.ControllerCompletionCount;
                 if(!await App.Core.Jyker.QueueContinuousPathAsync(targets.Select(JointCoordinateMap.ToLegacy).ToArray(),
-                    samples=>M.JykerPreviewContrl.ValidatePathAsync(samples,token),repeat,token)) {
-                    JLog.Info("六轴路径未启动：请查看规划、碰撞检查或逐帧确认日志。"); return;
+                    samples=>M.JykerPreviewContrl.ValidatePathAsync(samples,token),repeat,token,jointIndices:axes,toleranceMm:toleranceMm)) {
+                    JLog.Info("点位路径未启动：请查看规划、碰撞检查或逐帧确认日志。"); return;
                 }
-                JLog.Info($"六轴点位路径已提交：按表格顺序执行{records.Length}个点位"+
-                    (repeat?"，回到本次起点后重复，点击停止路径结束。":"，最终点停车并等待全部编码器确认。"));
+                JLog.Info($"{axisNames}点位路径已提交：按表格顺序执行{records.Length}个点位"+
+                    (repeat?"，回到本次起点后重复，点击停止路径结束。":"，最终点停车并等待参与轴编码器确认。"));
                 if(!await WaitForMovementCompletionAsync(version,completion,token,repeat)) return;
-                var actual=await App.Core.Jyker.ReadCurrentModelJointsAsync();
+                var actual=await App.Core.Jyker.ReadCurrentModelJointsAsync(jointIndices:axes,cancellationToken:token);
                 if(actual!=null) M.JykerKinematicContrl.ApplyModelJoints(actual);
-                JLog.Info("六轴路径完成：所有参与轴已通过最终编码器到位检查。");
+                JLog.Info("点位路径完成：所有参与轴已通过最终编码器到位检查。");
             }
-            catch(OperationCanceledException) { JLog.Info("六轴路径已停止。"); }
+            catch(OperationCanceledException) { JLog.Info("点位路径已停止。"); }
             catch(Exception ex) { App.Core.Jyker.StopNow(); JLog.Error(ex); }
             finally
             {
@@ -360,19 +389,13 @@ namespace SmallProject.WindowController
 
         private async Task MoveToTargetAsync(bool singleAxis)
         {
-            if (loopRunning) return;
+            if (loopRunning || recording) return;
             if (!App.Core.Serial.IsOpen) { JLog.Info("请先连接机械臂。"); return; }
-            int[]? axes=null;
-            double[] angles;
-            if(singleAxis) {
-                int axis=M.cb_SingleAxis.SelectedIndex;
-                if(!M.JykerKinematicContrl.TryReadModelJoint(axis,out double target)) return;
-                axes=new[]{axis};
-                angles=JointCoordinateMap.ToModel(App.Core.Jyker.currentJoints.a);
-                angles[axis]=target;
-                JLog.Info($"单轴运动：J{axis+1}到{target:F3}°，只等待节点{axis+1}编码器；其他关节按最近位置（首次0°）检查碰撞。");
-            }
-            else if(!M.JykerKinematicContrl.TryReadModelJoints(out angles)) return;
+            int[] axes=singleAxis ? new[]{M.cb_SingleAxis.SelectedIndex}
+                : M.JykerKinematicContrl.SelectedMotionAxes;
+            if(!M.JykerKinematicContrl.TryReadMotionTargets(axes,out var angles)) return;
+            string axisNames=string.Join("、",axes.Select(i=>$"J{i+1}"));
+            JLog.Info($"运动目标：{string.Join("，",axes.Select(i=>$"J{i+1}={angles[i]:F3}°"))}；只等待所选节点编码器，未选关节按最近位置（首次0°）检查碰撞。");
             loopRunning=true; loopCancellation=new CancellationTokenSource();
             var token=loopCancellation.Token;
             M.bt_MoveSingleAxis.IsEnabled = M.bt_MoveJoint.IsEnabled = false;
@@ -388,7 +411,7 @@ namespace SmallProject.WindowController
                 var actual=await App.Core.Jyker.ReadCurrentModelJointsAsync(jointIndices:axes,cancellationToken:token);
                 if(actual!=null) {
                     M.JykerKinematicContrl.ApplyModelJoints(actual);
-                    if(singleAxis) JLog.Info($"J{axes![0]+1}单轴运动完成，编码器位置{actual[axes[0]]:F3}°。");
+                    JLog.Info($"{axisNames}运动完成，参与轴编码器已确认到位。");
                 }
                 else JLog.Info("运动已完成，但刷新编码器位置超时。");
             }

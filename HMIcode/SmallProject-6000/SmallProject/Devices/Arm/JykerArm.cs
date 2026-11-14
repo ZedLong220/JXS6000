@@ -20,13 +20,11 @@ namespace SmallProject.Devices.Arm
     {
         //角度转换成脉冲 3200 为 360°
         public const double DEG_TO_PULSE = 8.888888889;
-        private const double ClosedLoopDriverMaxRevolutionsPerSecond = 4.2;
-        private const double ClosedLoopDriverAccelerationRevolutionsPerSecondSquared = 6.25;
-        private const double MinimumMoveTimeSeconds = 0.05;
         public const int MaximumContinuousPathPoints = 32;
         public double ContinuousPathDurationSeconds { get; private set; }
 
         private readonly SemaphoreSlim pathUpload = new(1,1);
+        public bool IsPathBusy => pathUpload.CurrentCount==0;
         private long lastCurrentQuery;
         public Dof6kinematic dof6Solver;
         public CtrlStepMotor[] motorJ;
@@ -155,26 +153,6 @@ namespace SmallProject.Devices.Arm
             catch(Exception ex) { StopNow(); JLog.Error(ex); }
         }
 
-        private double CalculateMoveTime(IReadOnlyList<double> from, IReadOnlyList<double> to)
-        {
-            var speed = App.JConfig.Speed;
-            if(!float.IsFinite(speed) || speed<=0) throw new ArgumentException("速度必须大于0");
-            double time = from.Zip(to, (a, b) => Math.Abs(b - a)).Max() / speed;
-            for (int i = 0; i < 6; i++)
-            {
-                double distanceRev = Math.Abs(to[i] - from[i]) * motorJ[i].Reduction / 360.0;
-                double acceleration = ClosedLoopDriverAccelerationRevolutionsPerSecondSquared;
-                double velocity = ClosedLoopDriverMaxRevolutionsPerSecond;
-                double accelerationDistance = velocity * velocity / acceleration;
-                double driverTime = distanceRev <= accelerationDistance
-                    ? 2.0 * Math.Sqrt(distanceRev / acceleration)
-                    : 2.0 * velocity / acceleration +
-                      (distanceRev - accelerationDistance) / velocity;
-                time = Math.Max(time, driverTime);
-            }
-            return Math.Max(time, MinimumMoveTimeSeconds);
-        }
-
         private float ToMotorRevolutions(int index, double legacyAngle)
         {
             double relativeAngle = legacyAngle - Joint6D_t.defult.a[index];
@@ -185,13 +163,19 @@ namespace SmallProject.Devices.Arm
         public async Task<bool> QueueContinuousPathAsync(
             IReadOnlyList<double[]> legacyTargets,
             Func<IReadOnlyList<double[]>, Task<(bool ok, string reason)>> validatePath,
-            bool repeat = true, CancellationToken cancellationToken = default, int[]? jointIndices = null)
+            bool repeat = true, CancellationToken cancellationToken = default, int[]? jointIndices = null,
+            double toleranceMm = 1.0)
         {
             if (!await pathUpload.WaitAsync(0,cancellationToken)) return false;
             try
             {
             int[] axes=jointIndices ?? new[]{0,1,2,3,4,5};
             if(axes.Length==0 || axes.Length>6 || axes.Distinct().Count()!=axes.Length || axes.Any(i=>i<0 || i>=6)) return false;
+            var settings=App.JConfig;
+            if(!settings.TryValidateMotion(out string settingsError)) { JLog.Info(settingsError); return false; }
+            if(!motorJ.Select(m=>m.Reduction).SequenceEqual(new double[]{settings.ReductionJ1,settings.ReductionJ2,
+                settings.ReductionJ3,settings.ReductionJ4,settings.ReductionJ5,settings.ReductionJ6}))
+            { JLog.Info("减速比已变更，请重启上位机后再运动。"); return false; }
             if (!App.Core.Serial.IsOpen || legacyTargets.Count == 0 ||
                 legacyTargets.Count > MaximumContinuousPathPoints)
                 return false;
@@ -208,14 +192,16 @@ namespace SmallProject.Devices.Arm
             long readMilliseconds=preparation.ElapsedMilliseconds;
             var times = new List<double>();
             double[] previous = JointCoordinateMap.ToLegacy(start);
-            foreach (var target in legacyTargets) { times.Add(CalculateMoveTime(previous,target)); previous=target; }
+            var reductions=motorJ.Select(m=>(double)m.Reduction).ToArray();
+            foreach (var target in legacyTargets) { times.Add(MotionTiming.MinimumSeconds(previous,target,reductions,axes,settings)); previous=target; }
             ContinuousPathPlanner.Plan plan;
             try
             {
                 plan = ContinuousPathPlanner.Build(dof6Solver.Model, start,
                     legacyTargets.Select(JointCoordinateMap.ToModel).ToArray(), times,
                     axes.Select(i=>motorJ[i].Direction*motorJ[i].Reduction/360.0).ToArray(), repeat,
-                    jointIndices:axes);
+                    jointIndices:axes,toleranceMm:toleranceMm,maxVelocity:settings.MotorMaxVelocity,
+                    maxAcceleration:settings.MotorMaxAcceleration,maxJerk:settings.MotorMaxJerk);
             }
             catch (ArgumentException ex) { JLog.Info("路径规划失败："+ex.Message); return false; }
             long plannedMilliseconds=preparation.ElapsedMilliseconds;
@@ -228,6 +214,7 @@ namespace SmallProject.Devices.Arm
             }
             cancellationToken.ThrowIfCancellationRequested();
             JLog.Info($"路径准备完成：编码器 {readMilliseconds}ms，规划 {plannedMilliseconds-readMilliseconds}ms，碰撞检查 {preparation.ElapsedMilliseconds-plannedMilliseconds}ms。");
+            JLog.Info($"运动参数：关节速度{settings.Speed:F1}°/s，电机限速{settings.MotorMaxVelocity:F1}圈/s，加速度{settings.MotorMaxAcceleration:F1}圈/s²，平滑限制{settings.MotorMaxJerk:F1}圈/s³。");
             var commands = MultiAxisProtocol.Encode(plan,axes,repeat)
                 .Select(command=>SlcanParser.ParseSlcanFrameStr(0,command.Code,command.Data)).ToList();
             bool accepted = await App.Core.Serial.SendBatchAndWaitForAckAsync(commands,cancellationToken);
@@ -239,7 +226,7 @@ namespace SmallProject.Devices.Arm
             else
             {
                 ContinuousPathDurationSeconds=plan.Segments.Sum(s=>s.Duration);
-                JLog.Info($"连续曲线已确认：{plan.Segments.Count}段，规划偏差界 {plan.MaximumDeviationMm:F3}mm（容差1mm），总时间 {ContinuousPathDurationSeconds:F3}s。");
+                JLog.Info($"连续曲线已确认：{plan.Segments.Count}段，规划偏差界 {plan.MaximumDeviationMm:F3}mm（圆滑范围{toleranceMm:F1}mm），总时间 {ContinuousPathDurationSeconds:F3}s。");
             }
             return accepted;
             }

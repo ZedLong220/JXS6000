@@ -156,11 +156,12 @@ void Motor::CloseLoopControlTick()
 
     // 限位光眼默认高电平，低电平触发；默认负方向为左，正方向为右。
     controller->ApplyLimitProtection();
-    if (motionPlanner.bufferedPath.Active() &&
-        (controller->limitProtectActive || controller->isStalled ||
-         !encoder->IsCalibrated() || controller->goalDisable || controller->goalBrake)) {
-        motionPlanner.bufferedPath.Fail(2U);
-        controller->requestMode = controller->modeRunning = MODE_STOP;
+    if (motionPlanner.bufferedPath.Active()) {
+        uint8_t pathError = controller->BufferedPathSafetyError();
+        if (pathError != BufferedPath::ErrorNone) {
+            motionPlanner.bufferedPath.Fail(pathError);
+            controller->requestMode = controller->modeRunning = MODE_STOP;
+        }
     }
 
     /************************************ 控制器输出 ************************************/
@@ -943,11 +944,23 @@ void Motor::Controller::SetCtrlMode(Motor::Mode_t _mode)
     requestMode = _mode;
 }
 
-bool Motor::Controller::CanStartBufferedPath(int32_t initialPosition) const
+uint8_t Motor::Controller::BufferedPathSafetyError() const
 {
+    if (!context->encoder->IsCalibrated()) return BufferedPath::ErrorEncoderNotCalibrated;
+    if (isStalled) return BufferedPath::ErrorMotorStalled;
+    if (goalDisable) return BufferedPath::ErrorMotorDisabled;
+    if (goalBrake) return BufferedPath::ErrorMotorBraked;
+    if (GetLimitInputState()!=0U) return BufferedPath::ErrorLimitActive;
+    return BufferedPath::ErrorNone;
+}
+
+uint8_t Motor::Controller::BufferedPathStartError(int32_t initialPosition) const
+{
+    uint8_t safetyError=BufferedPathSafetyError();
+    if (safetyError!=BufferedPath::ErrorNone) return safetyError;
     int64_t delta=(int64_t)realPosition-initialPosition;
-    return context->encoder->IsCalibrated() && !isStalled && !goalDisable &&
-        !goalBrake && GetLimitInputState()==0U && delta<=1024 && delta>=-1024;
+    return delta<=1024 && delta>=-1024 ? BufferedPath::ErrorNone :
+        BufferedPath::ErrorStartPositionMismatch;
 }
 
 

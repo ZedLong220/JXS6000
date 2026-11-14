@@ -39,7 +39,8 @@ namespace SmallProject.Devices.Arm.Kinematic
         public static Plan Build(UrdfKinematics model, double[] start,
             IReadOnlyList<double[]> targets, IReadOnlyList<double> initialSeconds,
             double[] motorScale, bool repeat, double toleranceMm = 1.0,
-            double maxVelocity = 4.2, double maxAcceleration = 6.25, int[]? jointIndices = null)
+            double maxVelocity = 4.2, double maxAcceleration = 6.25, int[]? jointIndices = null,
+            double maxJerk = 50.0)
         {
             var axes=jointIndices ?? new[] {0,1,2,3,4,5};
             int axisCount=axes.Length;
@@ -48,18 +49,28 @@ namespace SmallProject.Devices.Arm.Kinematic
             if (targets.Count == 0 || targets.Count > 32 || initialSeconds.Count != targets.Count ||
                 motorScale.Length != axisCount || motorScale.Any(v => !double.IsFinite(v) || Math.Abs(v) < .001) ||
                 !double.IsFinite(toleranceMm) || toleranceMm <= 0 || !double.IsFinite(maxVelocity) ||
-                !double.IsFinite(maxAcceleration) || maxVelocity <= 0 || maxAcceleration <= 0)
+                !double.IsFinite(maxAcceleration) || maxVelocity <= 0 || maxAcceleration <= 0 ||
+                !double.IsFinite(maxJerk) || maxJerk<=0)
                 throw new ArgumentException("连续路径参数无效");
             var q = new List<double[]> { start.ToArray() };
-            q.AddRange(targets.Select(v => v.ToArray()));
+            var requestedTimes=new List<double>();
+            for(int i=0;i<targets.Count;i++)
+            {
+                var target=targets[i];
+                // Recording the start/end twice is not an intentional dwell.
+                // Retaining the minimum-duration block inserts a visible stop.
+                if(target.Length==6 && q[^1].Zip(target).All(p=>Math.Abs(p.First-p.Second)<=1e-9)) continue;
+                q.Add(target.ToArray()); requestedTimes.Add(initialSeconds[i]);
+            }
+            if(q.Count==1) throw new ArgumentException("点位与当前位置相同，没有需要执行的运动");
             if (q.Any(v => !model.WithinLimits(v))) throw new ArgumentException("路径角度超出 URDF 范围");
             if (q.Any(v => Enumerable.Range(0, 6).Any(i => !axes.Contains(i) && Math.Abs(v[i]-start[i]) > 1e-8)))
                 throw new ArgumentException("路径包含未参与的关节运动");
             if (repeat && q[^1].Zip(start).Any(p => Math.Abs(p.First-p.Second) > 1e-6))
                 throw new ArgumentException("循环路径终点必须回到起点");
             if (repeat) q[^1] = start.ToArray();
-            int originalCount = targets.Count;
-            var originalTimes = initialSeconds.Select(t => Math.Ceiling(t*1000)/1000).ToArray();
+            int originalCount = q.Count-1;
+            var originalTimes = requestedTimes.Select(t => Math.Ceiling(t*1000)/1000).ToArray();
             if (originalTimes.Any(t => !double.IsFinite(t) || t < .05 || t > 120)) throw new ArgumentException("路径段时间无效");
             var weights = model.MaximumToolRadiiMillimetres().Select(r => r*Math.PI/180).ToArray();
             var original = q.ToArray();
@@ -101,8 +112,10 @@ namespace SmallProject.Devices.Arm.Kinematic
                         var c=controls.Select(v=>v[axes[axis]]*motorScale[axis]).ToArray();
                         var vb=Enumerable.Range(0,5).Select(k=>5*(c[k+1]-c[k])/t).ToArray();
                         var ab=Enumerable.Range(0,4).Select(k=>4*(vb[k+1]-vb[k])/t).ToArray();
+                        var jb=Enumerable.Range(0,3).Select(k=>3*(ab[k+1]-ab[k])/t).ToArray();
                         stretch=Math.Max(stretch,Bound(vb,4)/(maxVelocity*.95));
                         stretch=Math.Max(stretch,Math.Sqrt(Bound(ab,4)/(maxAcceleration*.95)));
+                        stretch=Math.Max(stretch,Math.Cbrt(Bound(jb,4)/(maxJerk*.95)));
                     }
                     if(stretch<=1) break;
                     t=Math.Ceiling(t*stretch*1.01*1000)/1000;
@@ -171,8 +184,10 @@ namespace SmallProject.Devices.Arm.Kinematic
                             var b=controls.Select(c => c[axes[axis]]*motorScale[axis]).ToArray();
                             var vb=Enumerable.Range(0,5).Select(k => 5*(b[k+1]-b[k])/times[i]).ToArray();
                             var ab=Enumerable.Range(0,4).Select(k => 4*(vb[k+1]-vb[k])/times[i]).ToArray();
+                            var jb=Enumerable.Range(0,3).Select(k => 3*(ab[k+1]-ab[k])/times[i]).ToArray();
                             stretch=Math.Max(stretch,Bound(vb,4)/(maxVelocity*.98));
                             stretch=Math.Max(stretch,Math.Sqrt(Bound(ab,4)/(maxAcceleration*.98)));
+                            stretch=Math.Max(stretch,Math.Cbrt(Bound(jb,4)/(maxJerk*.98)));
                         }
                     }
                     AddSamples(result.Samples,segment.Controls);

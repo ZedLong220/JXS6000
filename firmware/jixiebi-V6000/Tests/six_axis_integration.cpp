@@ -128,8 +128,9 @@ int main(int argc,char **argv)
         CHECK(drives[i].path.index==drives[0].path.index);
     }
     control(9,nullptr,0);pump();all_stopped();
-    load_path(host); advance(100); drives[2].path.Fail(2);advance(50);
-    CHECK(CAN_DualAxisGetState()==DUAL_AXIS_FAULT && last(0x38)->data[1]==5);all_stopped();
+    load_path(host); advance(100); drives[2].path.Fail(BufferedPath::ErrorLimitActive);advance(50);
+    CHECK(CAN_DualAxisGetState()==DUAL_AXIS_FAULT && last(0x38)->data[1]==5);
+    CHECK(last(0x38)->data[4]==3 && last(0x38)->data[5]==BufferedPath::ErrorLimitActive);all_stopped();
     load_path(host); advance(100);silentNode=6;advance(800);
     CHECK(CAN_DualAxisGetState()==DUAL_AXIS_FAULT && last(0x38)->data[1]==2);all_stopped();
     load_path(host); advance(100);encoderBias[3]=.1f;advance(finishTick/20+5100);

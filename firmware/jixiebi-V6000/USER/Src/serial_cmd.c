@@ -11,6 +11,16 @@
 #define RX_RING_SIZE 512U
 #define LINE_SIZE 64U
 #define PAIR_TIMEOUT_MS 1500U
+#define CONTROL_REPLAY_WINDOW_MS 5000U
+
+typedef struct {
+    uint16_t id;
+    uint32_t tick;
+    uint8_t length;
+    uint8_t data[8];
+    uint8_t accepted;
+    uint8_t valid;
+} ControlReplay;
 
 static uint8_t rxByte, rxRing[RX_RING_SIZE];
 static volatile uint16_t rxHead, rxTail;
@@ -22,6 +32,7 @@ static float pathTarget[2], pathTime[2];
 static uint8_t pendingMask, pathMask;
 static uint32_t pendingTick, pathTick;
 static uint16_t ackCounter;
+static ControlReplay controlReplay;
 
 void SerialCmd_ResetPending(void) { pendingMask = pathMask = 0U; CAN_TrajectoryDiscardVelocity(); }
 
@@ -173,6 +184,25 @@ static int is_control(uint8_t cmd)
            (cmd >= CAN_CMD_HOST_J2_POSITION_TIME && cmd <= CAN_CMD_HOST_J3_TRAJECTORY_POINT);
 }
 
+static int process_serial_control(uint16_t id, const uint8_t *data, uint8_t length)
+{
+    uint32_t now = HAL_GetTick();
+    int accepted;
+    if (controlReplay.valid && controlReplay.id == id && controlReplay.length == length &&
+        now - controlReplay.tick <= CONTROL_REPLAY_WINDOW_MS &&
+        (length == 0U || memcmp(controlReplay.data, data, length) == 0)) {
+        return controlReplay.accepted != 0U;
+    }
+    accepted = process_control((uint8_t)(id & 0x7FU), data, length);
+    controlReplay.id = id;
+    controlReplay.tick = now;
+    controlReplay.length = length;
+    if (length != 0U) memcpy(controlReplay.data, data, length);
+    controlReplay.accepted = accepted ? 1U : 0U;
+    controlReplay.valid = 1U;
+    return accepted;
+}
+
 int SerialCmd_HandleCanFrame(uint16_t id, const uint8_t *data, uint8_t length)
 {
     uint8_t node = (uint8_t)(id >> 7), cmd = (uint8_t)(id & 0x7FU);
@@ -216,15 +246,17 @@ static void handle_slcan(const char *line)
     }
     node = (uint8_t)(id >> 7);
     cmd = (uint8_t)(id & 0x7FU);
-    if (node == 0U && is_control(cmd)) accepted = process_control(cmd, data, length);
+    if (node == 0U && is_control(cmd)) accepted = process_serial_control(id, data, length);
     else if (node >= 1U && node <= 6U && length == 0U &&
              ((cmd >= 0x21U && cmd <= 0x2BU) || cmd == 0x35U)) {
+        controlReplay.valid = 0U;
         accepted = (node < 1U || node > CAN_AXIS_COUNT) ||
                    CAN_SendHostFrame(id, data, length) == 0;
     } else if ((node >= 1U && node <= CAN_AXIS_COUNT) &&
                cmd == 0x12U && length >= 4U) {
+        controlReplay.valid = 0U;
         accepted = CAN_SendHostFrame(id, data, length) == 0;
-    }
+    } else controlReplay.valid = 0U;
     acknowledge(id, data, length, accepted);
     reply(accepted ? '\r' : '\a');
 }
@@ -258,9 +290,11 @@ static void handle_text(const char *line)
 static void handle_line(const char *line)
 {
     if (strcmp(line, "S8") == 0 || strcmp(line, "O") == 0) {
+        controlReplay.valid = 0U;
         HostBridge_SetSession(1U);
         reply('\r');
     } else if (strcmp(line, "C") == 0) {
+        controlReplay.valid = 0U;
         SerialCmd_ResetPending();
         CAN_DualAxisStop();
         HostBridge_SetSession(0U);
@@ -275,6 +309,7 @@ void SerialCmd_Init(void)
     rxOverflow = lineLength = discardLine = 0U;
     SerialCmd_ResetPending();
     ackCounter = 0U;
+    memset(&controlReplay, 0, sizeof(controlReplay));
     HostBridge_Init();
     HAL_UART_Receive_IT(&huart1, &rxByte, 1U);
 }
@@ -308,6 +343,7 @@ void SerialCmd_Process(void)
         rxTail = rxHead;
         lineLength = 0U;
         discardLine = 1U;
+        controlReplay.valid = 0U;
         SerialCmd_ResetPending();
         CAN_DualAxisStop();
     }

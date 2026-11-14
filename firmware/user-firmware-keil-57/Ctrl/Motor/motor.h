@@ -152,7 +152,8 @@ public:
         void MoveToRightLimit(int32_t _vel);
         bool FetchLimitReachedReport(uint8_t* _side, uint8_t* _fromCommand);
         uint8_t GetLimitInputState() const;
-        bool CanStartBufferedPath(int32_t initialPosition) const;
+        uint8_t BufferedPathSafetyError() const;
+        uint8_t BufferedPathStartError(int32_t initialPosition) const;
 
 
     private:

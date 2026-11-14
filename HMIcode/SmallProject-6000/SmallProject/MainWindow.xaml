@@ -19,7 +19,7 @@
    rubyer:MenuHelper.IconWidth="30"
    Foreground="{DynamicResource DefaultForeground}"
    WindowChrome.IsHitTestVisibleInChrome="True">
-            <MenuItem x:Name="mt_Config" >
+            <MenuItem Click="Mt_Config_Click">
                 <MenuItem.Header>
                     <StackPanel rubyer:PanelHelper.Spacing="8"
                      Orientation="Horizontal"
@@ -29,7 +29,7 @@
                     </StackPanel>
                 </MenuItem.Header>
             </MenuItem>
-            <MenuItem x:Name="mt_MotorConfig" >
+            <MenuItem Click="Mt_MotorConfig_Click">
                 <MenuItem.Header>
                     <StackPanel rubyer:PanelHelper.Spacing="8"
          Orientation="Horizontal"
@@ -64,20 +64,22 @@
                 <TabItem Header="点位循环记录">
                     <DataGrid x:Name="dg_JointRecord" AutoGenerateColumns="False" BorderThickness="1"
                               CanUserAddRows="False" GridLinesVisibility="All" IsReadOnly="True"
-                              SelectionMode="Single" SelectionUnit="FullRow">
+                              SelectionMode="Single" SelectionUnit="FullRow"
+                              ToolTip="— 表示该轴未记录；部分轴点位不显示末端位姿。连续运动仅执行当前勾选且每条点位均已记录的轴。">
                         <DataGrid.Columns>
-                            <DataGridTextColumn Width="auto" Binding="{Binding J1}" Header="J1" />
-                            <DataGridTextColumn Width="auto" Binding="{Binding J2}" Header="J2" />
-                            <DataGridTextColumn Width="auto" Binding="{Binding J3}" Header="J3" />
-                            <DataGridTextColumn Width="auto" Binding="{Binding J4}" Header="J4" />
-                            <DataGridTextColumn Width="auto" Binding="{Binding J5}" Header="J5" />
-                            <DataGridTextColumn Width="auto" Binding="{Binding J6}" Header="J6" />
-                            <DataGridTextColumn Width="auto" Binding="{Binding X}" Header="X" />
-                            <DataGridTextColumn Width="auto" Binding="{Binding Y}" Header="Y" />
-                            <DataGridTextColumn Width="auto" Binding="{Binding Z}" Header="Z" />
-                            <DataGridTextColumn Width="auto" Binding="{Binding A}" Header="A" />
-                            <DataGridTextColumn Width="auto" Binding="{Binding B}" Header="B" />
-                            <DataGridTextColumn Width="auto" Binding="{Binding C}" Header="C" />
+                            <DataGridTextColumn Width="auto" Binding="{Binding RecordedAxes}" Header="记录轴" />
+                            <DataGridTextColumn Width="auto" Binding="{Binding RecordedJ1, TargetNullValue=—}" Header="J1" />
+                            <DataGridTextColumn Width="auto" Binding="{Binding RecordedJ2, TargetNullValue=—}" Header="J2" />
+                            <DataGridTextColumn Width="auto" Binding="{Binding RecordedJ3, TargetNullValue=—}" Header="J3" />
+                            <DataGridTextColumn Width="auto" Binding="{Binding RecordedJ4, TargetNullValue=—}" Header="J4" />
+                            <DataGridTextColumn Width="auto" Binding="{Binding RecordedJ5, TargetNullValue=—}" Header="J5" />
+                            <DataGridTextColumn Width="auto" Binding="{Binding RecordedJ6, TargetNullValue=—}" Header="J6" />
+                            <DataGridTextColumn Width="auto" Binding="{Binding RecordedX, TargetNullValue=—}" Header="X" />
+                            <DataGridTextColumn Width="auto" Binding="{Binding RecordedY, TargetNullValue=—}" Header="Y" />
+                            <DataGridTextColumn Width="auto" Binding="{Binding RecordedZ, TargetNullValue=—}" Header="Z" />
+                            <DataGridTextColumn Width="auto" Binding="{Binding RecordedA, TargetNullValue=—}" Header="A" />
+                            <DataGridTextColumn Width="auto" Binding="{Binding RecordedB, TargetNullValue=—}" Header="B" />
+                            <DataGridTextColumn Width="auto" Binding="{Binding RecordedC, TargetNullValue=—}" Header="C" />
                             <DataGridTextColumn Width="auto" Binding="{Binding AddTime, StringFormat=yyyy-MM-dd HH:mm:ss}" Header="记录时间" />
                         </DataGrid.Columns>
                     </DataGrid>
@@ -177,7 +179,7 @@
             <GroupBox Grid.Row="1" Header="操作"  Margin="5,0,5,0">
                 <ScrollViewer x:Name="OperationScroll" VerticalScrollBarVisibility="Auto"
                               HorizontalScrollBarVisibility="Disabled" CanContentScroll="False">
-                <Grid VerticalAlignment="Top" rubyer:GridHelper.RowDefinitions="30,30,30,30,30,30,20,30,30,30,30,30,30,30,30,30,30,30,30,30,30,36">
+                <Grid VerticalAlignment="Top" rubyer:GridHelper.RowDefinitions="30,30,30,30,30,30,30,30,30,30,30,30,30,30,30,30,30,30,30,30,30,36">
 
                     <Grid rubyer:GridHelper.ColumnDefinitions="*,*" Grid.Row="0">
                         <Grid Grid.Column="0" Margin="2">
@@ -228,9 +230,14 @@
                         </Grid>
                     </Grid>
 
+                    <Grid rubyer:GridHelper.ColumnDefinitions="*,*" Grid.Row="6"
+                          ToolTip="点位连续运动的圆滑范围，1～50mm；越大拐点减速越少，但会绕过点位。精度优先可设1mm，反向位置仍需减速，整条曲线继续检查碰撞。">
+                        <TextBlock Margin="2" VerticalAlignment="Center">圆滑 / mm:</TextBlock>
+                        <TextBox x:Name="tb_PathTolerance" Grid.Column="1" Margin="2" Text="20" />
+                    </Grid>
                     <Grid rubyer:GridHelper.ColumnDefinitions="*,*" Grid.Row="7">
                         <Grid Grid.Column="0" Margin="2">
-                            <TextBlock>J1 / °:</TextBlock>
+                            <CheckBox x:Name="cb_MoveJ1" VerticalAlignment="Center" ToolTip="勾选后参与运动；修改角度会自动勾选">J1 / °</CheckBox>
                         </Grid>
                         <Grid Grid.Column="1" Margin="2">
                             <TextBox x:Name="tb_Joint1">0</TextBox>
@@ -238,7 +245,7 @@
                     </Grid>
                     <Grid rubyer:GridHelper.ColumnDefinitions="*,*" Grid.Row="8">
                         <Grid Grid.Column="0" Margin="2">
-                            <TextBlock>J2 / °:</TextBlock>
+                            <CheckBox x:Name="cb_MoveJ2" VerticalAlignment="Center" ToolTip="勾选后参与运动；修改角度会自动勾选">J2 / °</CheckBox>
                         </Grid>
                         <Grid Grid.Column="1" Margin="2">
                             <TextBox x:Name="tb_Joint2">0</TextBox>
@@ -246,7 +253,7 @@
                     </Grid>
                     <Grid rubyer:GridHelper.ColumnDefinitions="*,*" Grid.Row="9">
                         <Grid Grid.Column="0" Margin="2">
-                            <TextBlock>J3 / °:</TextBlock>
+                            <CheckBox x:Name="cb_MoveJ3" VerticalAlignment="Center" ToolTip="勾选后参与运动；修改角度会自动勾选">J3 / °</CheckBox>
                         </Grid>
                         <Grid Grid.Column="1" Margin="2">
                             <TextBox x:Name="tb_Joint3">0</TextBox>
@@ -254,7 +261,7 @@
                     </Grid>
                     <Grid rubyer:GridHelper.ColumnDefinitions="*,*" Grid.Row="10">
                         <Grid Grid.Column="0" Margin="2">
-                            <TextBlock>J4 / °:</TextBlock>
+                            <CheckBox x:Name="cb_MoveJ4" VerticalAlignment="Center" ToolTip="勾选后参与运动；修改角度会自动勾选">J4 / °</CheckBox>
                         </Grid>
                         <Grid Grid.Column="1" Margin="2">
                             <TextBox x:Name="tb_Joint4">0</TextBox>
@@ -262,7 +269,7 @@
                     </Grid>
                     <Grid rubyer:GridHelper.ColumnDefinitions="*,*" Grid.Row="11">
                         <Grid Grid.Column="0" Margin="2">
-                            <TextBlock>J5 / °:</TextBlock>
+                            <CheckBox x:Name="cb_MoveJ5" VerticalAlignment="Center" ToolTip="勾选后参与运动；修改角度会自动勾选">J5 / °</CheckBox>
                         </Grid>
                         <Grid Grid.Column="1" Margin="2">
                             <TextBox x:Name="tb_Joint5">0</TextBox>
@@ -270,7 +277,7 @@
                     </Grid>
                     <Grid rubyer:GridHelper.ColumnDefinitions="*,*" Grid.Row="12">
                         <Grid Grid.Column="0" Margin="2">
-                            <TextBlock>J6 / °:</TextBlock>
+                            <CheckBox x:Name="cb_MoveJ6" VerticalAlignment="Center" ToolTip="勾选后参与运动；修改角度会自动勾选">J6 / °</CheckBox>
                         </Grid>
                         <Grid Grid.Column="1" Margin="2">
                             <TextBox x:Name="tb_Joint6" ToolTip="第六轴角度范围 -180°～180°">0</TextBox>
@@ -294,7 +301,7 @@
                     </Grid>
                     <Grid rubyer:GridHelper.ColumnDefinitions="*,*" Grid.Row="15">
                         <Grid Grid.Column="0" Margin="2">
-                            <Button x:Name="bt_MoveJoint" >六轴联动到目标</Button>
+                            <Button x:Name="bt_MoveJoint" ToolTip="只运动勾选的关节，支持1～6轴任意组合；未勾选的关节保持当前位置">运动勾选轴</Button>
                         </Grid>
                         <Grid Grid.Column="1" Margin="2">
                             <Button x:Name="bt_GetCurrentAngle" >最近指令位置</Button>
@@ -305,7 +312,7 @@
                             <Button x:Name="bt_MoveArmHand" >手动移动机械臂</Button>
                         </Grid>
                         <Grid Grid.Column="1" Margin="2">
-                            <Button x:Name="bt_AddRecord" >记录点位</Button>
+                            <Button x:Name="bt_AddRecord" ToolTip="只读取并记录勾选轴的实际编码器位置，无需填写目标角度">记录勾选轴</Button>
                         </Grid>
                     </Grid>
                     <Grid rubyer:GridHelper.ColumnDefinitions="*,*" Grid.Row="17">
@@ -317,7 +324,7 @@
                         </Grid>
                     </Grid>
                     <Grid rubyer:GridHelper.ColumnDefinitions="*,*" Grid.Row="19">
-                        <Button x:Name="bt_MoveFivePath" Margin="2">六轴点位连续运动</Button>
+                        <Button x:Name="bt_MoveFivePath" Margin="2" ToolTip="按表格顺序运动当前勾选轴；每条点位必须已记录所选轴">勾选轴点位连续运动</Button>
                         <CheckBox x:Name="cb_RepeatFivePath" Grid.Column="1" VerticalAlignment="Center"
                                   ToolTip="按记录顺序运行后回到本次启动位置，重复直到停止；每圈末端停车">循环（回起点）</CheckBox>
                     </Grid>

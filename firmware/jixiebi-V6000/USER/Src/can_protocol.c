@@ -13,6 +13,7 @@
 #define POSITION_TOLERANCE_REV 0.01f
 #define MIN_SEGMENT_SEC 0.05f
 #define MAX_SEGMENT_SEC 120.0f
+#define MULTI_STAGE_TIMEOUT_MS 5000U
 /* 51200 internal steps/revolution, signed int32 targets in the 57 firmware. */
 #define MAX_TARGET_REV 40000.0f
 #define RX_QUEUE_SIZE 64U
@@ -47,6 +48,7 @@ static uint32_t readySince, segmentStart, segmentDuration;
 static uint32_t lastQuery, lastStatus, txErrors;
 static uint8_t pathCount, pathIndex, pathPlaying, pathRepeat;
 static uint8_t oneShot, movingMask, lastError;
+static uint8_t faultNode, faultDetail;
 static DualAxisState state;
 /* Version 4: selected nodes 1..6 execute the buffered curve locally. */
 typedef struct {
@@ -128,8 +130,9 @@ static void publish_status(void)
     data[1] = lastError;
     data[2] = online_mask(HAL_GetTick());
     data[3] = movingMask;
-    data[4] = pathCount;
-    data[5] = pathPlaying ? pathIndex : 0xFFU;
+    data[4] = state==DUAL_AXIS_FAULT && lastError==5U ? faultNode : pathCount;
+    data[5] = state==DUAL_AXIS_FAULT && lastError==5U ? faultDetail :
+              (pathPlaying ? pathIndex : 0xFFU);
     data[6]=requiredMask; data[7]=CAN_PATH_PROTOCOL_VERSION; /* bit0=J1 ... bit5=J6 */
     CAN_SendHostFrame(CAN_CMD_CONTROLLER_STATUS, data, sizeof(data));
     lastStatus = HAL_GetTick();
@@ -152,10 +155,18 @@ static void stop_drives(void)
 
 static void fault(uint8_t error)
 {
+    if (error != 5U) faultNode = faultDetail = 0U;
     SerialCmd_ResetPending();
     pathPlaying = pathRepeat = oneShot = movingMask = 0U;
     stop_drives();
     set_state(DUAL_AXIS_FAULT, error);
+}
+
+static void drive_fault(uint8_t node, uint8_t detail)
+{
+    faultNode = node;
+    faultDetail = detail;
+    fault(5U);
 }
 
 int CAN_DualAxisIsActive(void)
@@ -279,7 +290,7 @@ static void update_spline(uint32_t now)
         for (uint8_t i=0U;i<CAN_AXIS_COUNT;++i) {
         if (!(requiredMask&(1U<<i))) continue;
             if (splineFeedback[i].valid && splineFeedback[i].session==splineSession && splineFeedback[i].error) {
-                fault(5U); return;
+                drive_fault((uint8_t)(i+1U),splineFeedback[i].error); return;
             }
             if (!splineFeedback[i].valid || splineFeedback[i].session!=splineSession ||
                 splineFeedback[i].count!=(uploadStage==1U ? 0U : uploadIndex+1U)) {
@@ -315,9 +326,11 @@ static void update_spline(uint32_t now)
         if (!splineFeedback[i].valid || splineFeedback[i].session!=splineSession || now-splineFeedback[i].tick>FEEDBACK_TIMEOUT_MS) {
             fault(4U); return;
         }
-        if (splineFeedback[i].error || splineFeedback[i].state==4U) { fault(5U); return; }
+        if (splineFeedback[i].error || splineFeedback[i].state==4U) {
+            drive_fault((uint8_t)(i+1U),splineFeedback[i].error); return;
+        }
         if (now-segmentStart>200U && splineFeedback[i].state!=2U && splineFeedback[i].state!=3U) {
-            fault(5U); return;
+            drive_fault((uint8_t)(i+1U),0xFFU); return;
         }
     }
     pathIndex=0U;
@@ -354,7 +367,7 @@ void CAN_DualAxisInit(void)
     memset(path, 0, sizeof(path));
     memset(&activePoint, 0, sizeof(activePoint));
     pathCount = pathIndex = pathPlaying = pathRepeat = oneShot = 0U;
-    movingMask = lastError = 0U;
+    movingMask = lastError = faultNode = faultDetail = 0U;
     lastQuery = lastStatus = txErrors = 0U;
     state = DUAL_AXIS_IDLE;
     splineEnabled=velocityReady=uploadStage=0U;
@@ -456,7 +469,7 @@ int CAN_MultiValue(uint8_t node,uint8_t kind,uint16_t sequence,float value)
 {
     uint8_t bit;
     if (!multiAxisMode || CAN_DualAxisIsActive() || !stageOpen || sequence!=pathCount ||
-        HAL_GetTick()-stageSince>=1500U || node<1U || node>CAN_AXIS_COUNT || kind>1U ||
+        HAL_GetTick()-stageSince>=MULTI_STAGE_TIMEOUT_MS || node<1U || node>CAN_AXIS_COUNT || kind>1U ||
         !isfinite(value)) { CAN_TrajectoryDiscardVelocity(); return -1; }
     bit=(uint8_t)(1U<<(node-1U));
     if (!(requiredMask&bit) || fabsf(value)>(kind?30.0f:MAX_TARGET_REV)) {
@@ -464,6 +477,7 @@ int CAN_MultiValue(uint8_t node,uint8_t kind,uint16_t sequence,float value)
     }
     if (kind) { staged.velocity[node-1U]=value; velocityMask|=bit; }
     else { staged.target[node-1U]=value; targetMask|=bit; }
+    stageSince=HAL_GetTick();
     return 0;
 }
 
@@ -471,7 +485,7 @@ int CAN_MultiCommit(uint16_t sequence)
 {
     uint8_t valid=multiAxisMode && !CAN_DualAxisIsActive() && stageOpen && sequence==pathCount &&
         pathCount<CAN_TRAJECTORY_MAX_POINTS && targetMask==requiredMask && velocityMask==requiredMask &&
-        HAL_GetTick()-stageSince<1500U;
+        HAL_GetTick()-stageSince<MULTI_STAGE_TIMEOUT_MS;
     CAN_TrajectoryDiscardVelocity();
     if (!valid) return -1;
     path[pathCount++]=staged;

@@ -7,9 +7,9 @@ xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
 xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
 xmlns:local="clr-namespace:SmallProject.Dialogs"
 mc:Ignorable="d"
-Title="系统设置"  Height="600" Width="700">
-    <Grid rubyer:GridHelper.ColumnDefinitions="300,*">
-        <Grid rubyer:GridHelper.RowDefinitions="40,40,40,40,40,40,40,40,50,20,*" >
+Title="系统设置"  Height="680" Width="700">
+    <Grid rubyer:GridHelper.ColumnDefinitions="380,*">
+        <Grid rubyer:GridHelper.RowDefinitions="40,40,40,40,40,40,40,40,40,40,40,50,*" >
             <Grid Grid.Row="0" rubyer:GridHelper.ColumnDefinitions="80,*" Margin="5">
                 <TextBlock Grid.Column="0">J1减速比</TextBlock>
                 <rubyer:NumericBox x:Name="tb_ReductionJ1" Grid.Column="1" Interval="1" NumericType="Int" Value="{Binding ReductionJ1}"/>
@@ -42,13 +42,30 @@ Title="系统设置"  Height="600" Width="700">
                 <TextBlock Grid.Column="0">电流(A)</TextBlock>
                 <rubyer:NumericBox  x:Name="tb_Current" Grid.Column="1" Interval="2" NumericType="Double" Value="{Binding Current}"/>
             </Grid>
-            <Grid Grid.Row="8" rubyer:GridHelper.ColumnDefinitions="*,*">
+            <Grid Grid.Row="8" rubyer:GridHelper.ColumnDefinitions="150,*" Margin="5">
+                <TextBlock VerticalAlignment="Center">电机限速(圈/s)</TextBlock>
+                <rubyer:NumericBox x:Name="tb_MotorMaxVelocity" Grid.Column="1" Interval="1" NumericType="Double" Value="{Binding MotorMaxVelocity}"
+                                   ToolTip="规划速度上限，范围大于0至30；驱动板自身的速度限制仍生效。" />
+            </Grid>
+            <Grid Grid.Row="9" rubyer:GridHelper.ColumnDefinitions="150,*" Margin="5">
+                <TextBlock VerticalAlignment="Center">电机加速度(圈/s²)</TextBlock>
+                 <rubyer:NumericBox x:Name="tb_MotorMaxAcceleration" Grid.Column="1" Interval="1" NumericType="Double" Value="{Binding MotorMaxAcceleration}"
+                                    ToolTip="范围大于0至23；该上限与当前驱动板已验证的曲线能力匹配。" />
+            </Grid>
+            <Grid Grid.Row="10" rubyer:GridHelper.ColumnDefinitions="150,*" Margin="5">
+                <TextBlock VerticalAlignment="Center">平滑限制(圈/s³)</TextBlock>
+                <rubyer:NumericBox x:Name="tb_MotorMaxJerk" Grid.Column="1" Interval="50" NumericType="Double" Value="{Binding MotorMaxJerk}"
+                                   ToolTip="加速度的变化率，范围大于0至5000；越大响应越快，越小过渡越柔和。" />
+            </Grid>
+            <Grid Grid.Row="11" rubyer:GridHelper.ColumnDefinitions="*,*">
                 <Button Margin="3,8" Grid.Column="1" x:Name="EnterOK"  Click="EnterOK_Click" >
                     <StackPanel rubyer:PanelHelper.Spacing="8" Orientation="Horizontal"  >
                         <TextBlock FontSize="12" Text="应用" />
                     </StackPanel>
                 </Button>
             </Grid>
+            <TextBlock Grid.Row="12" Margin="8" TextWrapping="Wrap" FontSize="12"
+                       Text="速度和平滑参数同时用于单轴和多轴，保存后下一次运动生效；减速比修改后需重启。电机限速和加速度应与驱动板能力匹配，系统不会修改驱动板保存的参数。" />
         </Grid>
     </Grid>
 </rubyer:RubyerWindow>
