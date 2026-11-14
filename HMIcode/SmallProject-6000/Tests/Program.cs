@@ -47,12 +47,12 @@ foreach (var q in targets)
 }
 Check(!model.TryInverse(new Pose6D_t(10000,10000,10000,0,0,0), new double[6], out _), "Unreachable target fails");
 Check(!model.TryInverse(new Pose6D_t(double.NaN,0,0,0,0,0), new double[6], out _), "Non-finite target fails");
-Check(Math.Abs(model.LowerDegrees[1] + 250) < .00001 && Math.Abs(model.UpperDegrees[1] - 180) < .00001, "J2 extends its negative limit to -250 degrees");
-Check(Math.Abs(model.LowerDegrees[2] + 180) < .00001 && Math.Abs(model.UpperDegrees[2] - 330) < .00001, "J3 keeps its negative range and extends to +330 degrees");
-var expandedLowerLegacy = JointCoordinateMap.ToLegacy(new double[] {0,-250,-180,0,0,0});
-var expandedUpperLegacy = JointCoordinateMap.ToLegacy(new double[] {0,180,330,0,0,0});
-Check(expandedLowerLegacy[1] == -250 && expandedUpperLegacy[1] == 180, "J2 expanded model range maps to legacy -250 through 180 degrees");
-Check(expandedLowerLegacy[2] == 0 && expandedUpperLegacy[2] == 510, "J3 motor coordinates preserve the existing 180 degree home offset");
+Check(Math.Abs(model.LowerDegrees[1] + 180) < .00001 && Math.Abs(model.UpperDegrees[1] - 250) < .00001, "J2 mirrored model range is -180 through 250 degrees");
+Check(Math.Abs(model.LowerDegrees[2] + 330) < .00001 && Math.Abs(model.UpperDegrees[2] - 180) < .00001, "J3 mirrored model range is -330 through 180 degrees");
+var expandedLowerLegacy = JointCoordinateMap.ToLegacy(new double[] {0,-180,-330,0,0,0});
+var expandedUpperLegacy = JointCoordinateMap.ToLegacy(new double[] {0,250,180,0,0,0});
+Check(expandedLowerLegacy[1] == -180 && expandedUpperLegacy[1] == 250, "J2 mirrored model range maps to legacy -180 through 250 degrees");
+Check(expandedLowerLegacy[2] == -150 && expandedUpperLegacy[2] == 360, "J3 motor coordinates preserve the existing 180 degree home offset");
 Check(model.WithinLimits(new double[] {0,0,0,0,-90,0}) && model.WithinLimits(new double[] {0,0,0,0,360,0}), "J5 keeps -90 degrees and extends to +360 degrees");
 Check(!model.WithinLimits(new double[] {0,0,0,0,-91,0}) && !model.WithinLimits(new double[] {0,0,0,0,361,0}), "J5 limits");
 var compatibility = new Dof6kinematic(path);

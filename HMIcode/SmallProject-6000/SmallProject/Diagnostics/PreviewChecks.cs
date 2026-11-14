@@ -44,7 +44,7 @@ namespace SmallProject.Diagnostics
                     window.tb_PathTolerance.Text=invalid;
                     Check(!window.JykerKinematicContrl.TryReadPathTolerance(out _),"Invalid smoothing allowance is rejected");
                 }
-                var recordedLoop=new[]{new double[]{10,10,10,0,0,0},new double[]{-10,-10,30,0,0,0},zero,zero};
+                var recordedLoop=new[]{new double[]{-10,-10,-10,0,0,0},new double[]{10,10,-30,0,0,0},zero,zero};
                 foreach(double tolerance in new[]{1.0,20,50}) {
                     window.tb_PathTolerance.Text=tolerance.ToString(System.Globalization.CultureInfo.InvariantCulture);
                     Check(window.JykerKinematicContrl.TryReadPathTolerance(out double entered) && entered==tolerance,
@@ -107,13 +107,13 @@ namespace SmallProject.Diagnostics
                     new[]{1.0,1.0,1.0},new[]{testArm.motorJ[1].Direction*testArm.motorJ[1].Reduction/360,
                         testArm.motorJ[2].Direction*testArm.motorJ[2].Reduction/360},false,jointIndices:new[]{1,2});
                 Check((await preview.ValidatePathAsync(plan.Samples)).ok,"Actual rounded path passes native/WebView batch validation");
-                Check(!(await preview.ValidatePathAsync(new[]{zero,new double[]{0,40,-40,0,0,0},zero})).ok,
-                    "Old fixed test route is blocked by the new JXS6000 collision model");
+                Check((await preview.ValidatePathAsync(new[]{zero,new double[]{0,40,-40,0,0,0},zero})).ok,
+                    "Fixed test route follows the installed-axis model without collision");
                 Check((await preview.ValidateMotionAsync(zero, new double[] {0,0,0,0,360,0})).ok, "J5 +360 path");
                 Check((await preview.ValidateMotionAsync(zero, new double[] {0,0,0,0,-90,0})).ok, "J5 -90 path");
-                Check((await preview.ValidateMotionAsync(zero, new double[] {0,0,0,-50,0,0})).ok, "J4 -50 path");
-                Check((await preview.ValidateMotionAsync(zero, new double[] {0,0,0,140,0,0})).ok, "J4 +140 path");
-                Check(!(await preview.ValidateMotionAsync(zero, new double[] {0,0,0,-60,0,0})).ok, "J4 obstruction");
+                Check((await preview.ValidateMotionAsync(zero, new double[] {0,0,0,-140,0,0})).ok, "J4 -140 path");
+                Check((await preview.ValidateMotionAsync(zero, new double[] {0,0,0,50,0,0})).ok, "J4 +50 path");
+                Check(!(await preview.ValidateMotionAsync(zero, new double[] {0,0,0,60,0,0})).ok, "J4 obstruction");
                 var expanded = new double[] {0,150,-150,0,0,0};
                 preview.SetJoints(expanded);
                 for (int attempt=0;attempt<40;attempt++)
@@ -126,7 +126,7 @@ namespace SmallProject.Diagnostics
                     new[]{new double[]{.5,-.5,.5,.5,.5,30},new double[]{-.5,-.5,-.5,-.5,-.5,-45},zero},
                     new[]{1.0,1.0,1.0},testArm.motorJ.Select(m=>m.Direction*m.Reduction/360).ToArray(),false);
                 Check((await preview.ValidatePathAsync(fivePlan.Samples)).ok,"Six-axis rounded wire curve passes WebView validation");
-                foreach(double angle in new[]{10.0,150.0}) {
+                foreach(double angle in new[]{-10.0,-150.0}) {
                     var target=new double[]{0,0,angle,0,0,0};
                     var watch=System.Diagnostics.Stopwatch.StartNew();
                     var single=ContinuousPathPlanner.Build(App.Core.Jyker.dof6Solver.Model,zero,new[]{target},

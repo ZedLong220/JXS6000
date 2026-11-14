@@ -47,8 +47,8 @@ test('HMI motion validation uses the wrist proxy and restores the displayed pose
   const {robot, joints} = loadFixture();
   const names = Array.from({length: 6}, (_, i) => `joint_${i+1}`);
   names.forEach(name => { joints[name].limit = { lower: -Math.PI, upper: Math.PI }; });
-  joints.joint_2.limit = { lower: -250 * Math.PI / 180, upper: Math.PI };
-  joints.joint_3.limit = { lower: -Math.PI, upper: 330 * Math.PI / 180 };
+  joints.joint_2.limit = { lower: -Math.PI, upper: 250 * Math.PI / 180 };
+  joints.joint_3.limit = { lower: -330 * Math.PI / 180, upper: Math.PI };
   joints.joint_5.limit = { lower: -Math.PI / 2, upper: 2 * Math.PI };
   const guard = createRobotSafetyGuard(robot, JXS6000_SAFETY_OPTIONS);
   joints.joint_1(.1);
@@ -56,7 +56,7 @@ test('HMI motion validation uses the wrist proxy and restores the displayed pose
   assert.equal(validateMotion(robot, names, start, [0,0,0,0,360,0], guard).ok, true);
   assert.equal(joints.joint_1.angle, .1);
   assert.equal(joints.joint_5.angle, 0);
-  assert.equal(validateMotion(robot, names, start, [0,0,0,-60,0,0], guard).ok, false);
+  assert.equal(validateMotion(robot, names, start, [0,0,0,60,0,0], guard).ok, false);
   assert.equal(joints.joint_1.angle, .1);
   assert.equal(joints.joint_4.angle, 0);
   assert.equal(validateMotion(robot, names, start, [0,0,0,NaN,0,0], guard).ok, false);
@@ -67,13 +67,13 @@ test('batch curve checks detect a middle collision, invalid start and limits, re
   const names=Array.from({length:6},(_,i)=>`joint_${i+1}`);
   const guard=createRobotSafetyGuard(robot,JXS6000_SAFETY_OPTIONS);
   joints.joint_1(.1);
-  assert.equal(validatePath(robot,names,[[0,0,0,0,0,0],[0,0,0,-60,0,0],[0,0,0,0,0,0]],guard).ok,false);
+  assert.equal(validatePath(robot,names,[[0,0,0,0,0,0],[0,0,0,60,0,0],[0,0,0,0,0,0]],guard).ok,false);
   assert.equal(joints.joint_1.angle,.1);
   assert.equal(validatePath(robot,names,[[0,0,0,0,0,0],[0,0,0,0,361,0]],guard).ok,false);
   assert.equal(validatePath(robot,names,[[0,NaN,0,0,0,0]],guard).ok,false);
 });
 
-test('actual wire curves are checked: the old fixed route collides with the new structure, a clear route passes', {
+test('actual wire curves remain clear with the installed-axis model directions', {
   skip: !fs.existsSync(new URL('../../Tests/bin/Debug/net10.0/continuous-samples.json',import.meta.url)) && 'run KinematicsChecks to generate wire fixture'
 }, () => {
   const fixture=new URL('../../Tests/bin/Debug/net10.0/continuous-samples.json',import.meta.url);
@@ -82,11 +82,8 @@ test('actual wire curves are checked: the old fixed route collides with the new 
   const {robot}=loadFixture();
   const names=Array.from({length:6},(_,i)=>`joint_${i+1}`);
   const guard=createRobotSafetyGuard(robot,JXS6000_SAFETY_OPTIONS);
-  for(const samples of [data.first,data.samples]) {
+  for(const samples of [data.first,data.samples,data.safe]) {
     const result=validatePath(robot,names,samples,guard);
-    assert.equal(result.ok,false,'old fixed path must be rejected');
-    assert.match(result.reason,/link_1 \/ link_3/);
+    assert.equal(result.ok,true,result.reason);
   }
-  const result=validatePath(robot,names,data.safe,guard);
-  assert.equal(result.ok,true,result.reason);
 });

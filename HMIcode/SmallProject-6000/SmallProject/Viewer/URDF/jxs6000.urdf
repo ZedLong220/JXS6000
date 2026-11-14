@@ -10,6 +10,9 @@
     existing tool frame; separate flange/gripper meshes were not supplied.
     Joint limits and dynamics are provisional until production limits and
     calibrated mass properties are available.
+
+    Joint axes are reversed from the original CAD convention so positive model
+    angles follow the installed motors' observed physical motion.
   -->
 
   <material name="base_gray"><color rgba="0.34 0.38 0.42 1" /></material>
@@ -94,7 +97,7 @@
   <joint name="joint_1" type="revolute">
     <parent link="base_link" /><child link="link_1" />
     <origin xyz="0 0 0.160000000" rpy="0 0 0" />
-    <axis xyz="0 0 1" />
+    <axis xyz="0 0 -1" />
     <limit lower="-3.141592654" upper="3.141592654" effort="120" velocity="1.5" />
     <dynamics damping="0.15" friction="0.05" />
   </joint>
@@ -102,23 +105,23 @@
   <joint name="joint_2" type="revolute">
     <parent link="link_1" /><child link="link_2" />
     <origin xyz="0 0 0.050000000" rpy="0 0 0" />
-    <axis xyz="1 0 0" />
-    <limit lower="-4.363323130" upper="3.141592654" effort="120" velocity="1.5" />
+    <axis xyz="-1 0 0" />
+    <limit lower="-3.141592654" upper="4.363323130" effort="120" velocity="1.5" />
     <dynamics damping="0.15" friction="0.05" />
   </joint>
 
   <joint name="joint_3" type="revolute">
     <parent link="link_2" /><child link="link_3" />
     <origin xyz="0 -0.360000000 0" rpy="0 0 0" />
-    <axis xyz="1 0 0" />
-    <limit lower="-3.141592654" upper="5.759586532" effort="100" velocity="1.5" />
+    <axis xyz="-1 0 0" />
+    <limit lower="-5.759586532" upper="3.141592654" effort="100" velocity="1.5" />
     <dynamics damping="0.15" friction="0.05" />
   </joint>
 
   <joint name="joint_4" type="revolute">
     <parent link="link_3" /><child link="link_4" />
     <origin xyz="0 0.331711500 0.120733100" rpy="0 0 0" />
-    <axis xyz="1 0 0" />
+    <axis xyz="-1 0 0" />
     <limit lower="-3.141592654" upper="3.141592654" effort="70" velocity="2.0" />
     <dynamics damping="0.12" friction="0.04" />
   </joint>
@@ -126,7 +129,7 @@
   <joint name="joint_5" type="revolute">
     <parent link="link_4" /><child link="link_5" />
     <origin xyz="-0.103500000 0.048394500 0.017613900" rpy="0 0 0" />
-    <axis xyz="0 -0.939692621 -0.342020143" />
+    <axis xyz="0 0.939692621 0.342020143" />
     <limit lower="-1.570796327" upper="6.283185307" effort="45" velocity="2.0" />
     <dynamics damping="0.10" friction="0.03" />
   </joint>
@@ -134,7 +137,7 @@
   <joint name="joint_6" type="revolute">
     <parent link="link_5" /><child link="link_6" />
     <origin xyz="0.161000000 0.066624000 0.024253000" rpy="0 0 0" />
-    <axis xyz="0.939692621 0 0.342020143" />
+    <axis xyz="-0.939692621 0 -0.342020143" />
     <limit lower="-3.141592654" upper="3.141592654" effort="30" velocity="2.5" />
     <dynamics damping="0.08" friction="0.02" />
   </joint>

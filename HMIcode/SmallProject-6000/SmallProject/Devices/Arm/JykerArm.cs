@@ -38,8 +38,8 @@ namespace SmallProject.Devices.Arm
             dof6Solver = new Dof6kinematic(App.JConfig);
             motorJ = new CtrlStepMotor[6] {
                 new CtrlStepMotor(){ AngleLimitMin =-90.1,AngleLimitMax = 90.1,Reduction = App.JConfig.ReductionJ1}
-                ,new CtrlStepMotor(){ AngleLimitMin = -250.1,AngleLimitMax = 180.1 , OffsetAngle = -90,Reduction = App.JConfig.ReductionJ2 }
-                ,new CtrlStepMotor(){ AngleLimitMin = -0.1,AngleLimitMax= 510.1,OffsetAngle = 180 ,Reduction = App.JConfig.ReductionJ3}
+                ,new CtrlStepMotor(){ AngleLimitMin = -180.1,AngleLimitMax = 250.1 , OffsetAngle = -90,Reduction = App.JConfig.ReductionJ2 }
+                ,new CtrlStepMotor(){ AngleLimitMin = -150.1,AngleLimitMax= 360.1,OffsetAngle = 180 ,Reduction = App.JConfig.ReductionJ3}
                 ,new CtrlStepMotor(){ AngleLimitMin = -0.1,AngleLimitMax = 180.1 ,Reduction = App.JConfig.ReductionJ4}
                 ,new CtrlStepMotor(){ AngleLimitMin = -180.1 , AngleLimitMax = 270.1,Reduction = App.JConfig.ReductionJ5}
                 ,new CtrlStepMotor() { AngleLimitMin = -180.1,AngleLimitMax = 180.1,Reduction = App.JConfig.ReductionJ6}

@@ -33,7 +33,7 @@ test('all six shipped joint axes can move at least one degree from zero', () => 
 test('J4 and J5 sweep useful ranges with collision blocking still enabled', () => {
   const { robot, joints } = loadFixture();
   const guard = createRobotSafetyGuard(robot, JXS6000_SAFETY_OPTIONS);
-  for (const [name, min, max] of [['joint_4', -50, 140], ['joint_5', -90, 360]]) {
+  for (const [name, min, max] of [['joint_4', -140, 50], ['joint_5', -90, 360]]) {
     for (let degrees = min; degrees <= max; degrees += 1) {
       joints[name](degrees * Math.PI / 180);
       assert.equal(guard(), null, `${name} at ${degrees} degrees`);
@@ -42,23 +42,23 @@ test('J4 and J5 sweep useful ranges with collision blocking still enabled', () =
   }
 });
 
-test('the previously verified J2/J3 checkpoint remains collision free', () => {
+test('a checkpoint near the requested J2/J3 limits remains collision free', () => {
   const { robot, joints } = loadFixture();
   const guard = createRobotSafetyGuard(robot, JXS6000_SAFETY_OPTIONS);
-  joints.joint_2(-200 * Math.PI / 180);
-  joints.joint_3(290 * Math.PI / 180);
-  joints.joint_4(-55.4 * Math.PI / 180);
+  joints.joint_2(100 * Math.PI / 180);
+  joints.joint_3(-300 * Math.PI / 180);
+  joints.joint_4(50 * Math.PI / 180);
   assert.equal(guard(), null);
 });
 
-test('the requested outer J2/J3 input limits remain protected by collision checks', () => {
+test('the reversed J2/J3 model still blocks unsafe intermediate poses', () => {
   const { robot, joints } = loadFixture();
   const guard = createRobotSafetyGuard(robot, JXS6000_SAFETY_OPTIONS);
-  joints.joint_2(-250 * Math.PI / 180);
+  joints.joint_2(-100 * Math.PI / 180);
   assert.deepEqual(guard(), { type: 'ground', body: 'link_2' });
   joints.joint_2(0);
-  joints.joint_3(330 * Math.PI / 180);
-  assert.deepEqual(guard(), { type: 'self', bodyA: 'base_link', bodyB: 'link_3' });
+  joints.joint_3(10 * Math.PI / 180);
+  assert.deepEqual(guard(), { type: 'self', bodyA: 'link_1', bodyB: 'link_3' });
 });
 
 test('new S6 visual and collision meshes share the supplied detail-free geometry', () => {
@@ -81,11 +81,11 @@ test('new S6 visual and collision meshes share the supplied detail-free geometry
 test('major JXS6000 wrist collisions remain blocked', () => {
   const { robot, joints } = loadFixture();
   const guard = createRobotSafetyGuard(robot, JXS6000_SAFETY_OPTIONS);
-  joints.joint_4(-60 * Math.PI / 180);
+  joints.joint_4(60 * Math.PI / 180);
   assert.deepEqual(guard(), { type: 'self', bodyA: 'link_2', bodyB: 'link_5' });
-  joints.joint_4(155 * Math.PI / 180);
+  joints.joint_4(-155 * Math.PI / 180);
   assert.deepEqual(guard(), { type: 'self', bodyA: 'link_3', bodyB: 'link_5' });
-  joints.joint_4(140 * Math.PI / 180);
+  joints.joint_4(50 * Math.PI / 180);
   assert.equal(guard(), null);
 });
 

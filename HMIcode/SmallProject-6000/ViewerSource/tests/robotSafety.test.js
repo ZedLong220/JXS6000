@@ -79,10 +79,10 @@ test('optimized bounds preserve reference collision results throughout the JXS60
   const guard = createRobotSafetyGuard(robot,JXS6000_SAFETY_OPTIONS);
   const reference = createReferenceGuard(robot,JXS6000_SAFETY_OPTIONS);
   const poses = [];
-  for(const j2 of [-250,-90,0,90,180]) for(const j3 of [-180,-130,-40,0,10,40,90,150,240,330])
+  for(const j2 of [-180,-90,0,90,250]) for(const j3 of [-330,-240,-150,-90,-40,0,10,40,90,180])
     poses.push([0,j2,j3,0,0,0]);
   for(let i=0;i<80;i++) poses.push([
-    -180+(i*137)%361, -250+(i*73)%431, -180+(i*113)%511,
+    -180+(i*137)%361, -180+(i*73)%431, -330+(i*113)%511,
     -50+(i*29)%191, -90+(i*97)%451, -180+(i*53)%361]);
   for(const q of poses) {
     q.forEach((value,i)=>joints[`joint_${i+1}`].setJointValue(MathUtils.degToRad(value)));
