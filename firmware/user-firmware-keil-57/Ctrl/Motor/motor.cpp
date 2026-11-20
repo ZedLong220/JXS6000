@@ -107,6 +107,21 @@ void Motor::CloseLoopControlTick()
         controller->realPosition = angle;
         controller->realPositionLast = angle;
 
+        /* Auto-enable must hold the shaft where power was applied.  Without
+           this synchronization, command-position mode would use the EEPROM
+           home offset initialized by Controller::Init() and could move the
+           joint immediately at boot. */
+        if (controller->requestMode == MODE_COMMAND_POSITION)
+        {
+            controller->goalPosition = angle;
+            controller->softPosition = angle;
+            controller->goalVelocity = 0;
+            controller->softVelocity = 0;
+            controller->estPosition = angle;
+            controller->estLeadPosition = 0;
+            controller->estError = 0;
+        }
+
         isFirstCalled = false;
         return;
     }
@@ -257,7 +272,9 @@ void Motor::CloseLoopControlTick()
          * 同时清空控制器积分，防止上一段运动的残留影响本段运动。
          */
         controller->softNewCurve = false;
-        controller->ClearIntegral();
+        if (!controller->preserveIntegralOnNewCurve)
+            controller->ClearIntegral();
+        controller->preserveIntegralOnNewCurve = false;
         controller->ClearStallFlag();
 
         switch (controller->modeRunning)
@@ -940,8 +957,34 @@ void Motor::Controller::SetCtrlMode(Motor::Mode_t _mode)
 {
     if (_mode != MODE_BUFFERED_PATH && context->motionPlanner.bufferedPath.count != 0U)
         context->motionPlanner.bufferedPath.Clear(context->motionPlanner.bufferedPath.session);
+    /* A buffered path starts from the position currently being held. Keep the
+       gravity-compensating DCE integral across that transition. */
+    preserveIntegralOnNewCurve =
+        _mode == MODE_BUFFERED_PATH && modeRunning == MODE_COMMAND_POSITION;
     /* 这里只修改请求模式，真正切换在下一次控制周期中完成。 */
     requestMode = _mode;
+}
+
+
+void Motor::Controller::HoldCurrentPosition()
+{
+    /* Normal stop: capture the encoder position without passing through
+       MODE_STOP. The position tracker must be restarted on the next control
+       tick; otherwise a second path can reuse its stale pre-path state and
+       overwrite this hold target. Keep the DCE integral so gravity axes do
+       not lose torque while switching between hold and motion. */
+    goalPosition = realPosition;
+    softPosition = realPosition;
+    goalVelocity = 0;
+    softVelocity = 0;
+    goalCurrent = 0;
+    softCurrent = 0;
+    requestMode = MODE_COMMAND_POSITION;
+    modeRunning = MODE_COMMAND_POSITION;
+    softNewCurve = true;
+    preserveIntegralOnNewCurve = true;
+    limitMoveActive = false;
+    state = STATE_FINISH;
 }
 
 uint8_t Motor::Controller::BufferedPathSafetyError() const
@@ -954,12 +997,16 @@ uint8_t Motor::Controller::BufferedPathSafetyError() const
     return BufferedPath::ErrorNone;
 }
 
-uint8_t Motor::Controller::BufferedPathStartError(int32_t initialPosition) const
+uint8_t Motor::Controller::BufferedPathStartError(int32_t initialPosition,
+                                                  int32_t toleranceSteps) const
 {
     uint8_t safetyError=BufferedPathSafetyError();
     if (safetyError!=BufferedPath::ErrorNone) return safetyError;
+    /* PrepareSplineBlock already converted host-relative revolutions to the
+       absolute encoder coordinate by adding encoderHomeOffset. */
     int64_t delta=(int64_t)realPosition-initialPosition;
-    return delta<=1024 && delta>=-1024 ? BufferedPath::ErrorNone :
+    return toleranceSteps>=0 && delta<=toleranceSteps && delta>=-toleranceSteps ?
+        BufferedPath::ErrorNone :
         BufferedPath::ErrorStartPositionMismatch;
 }
 
@@ -1033,6 +1080,11 @@ float Motor::Controller::GetPosition(bool _isLap)
                   :
            (float) (realPosition - context->config.motionParams.encoderHomeOffset) /
            (float) (context->MOTOR_ONE_CIRCLE_SUBDIVIDE_STEPS);
+}
+
+int32_t Motor::Controller::GetEncoderPositionSteps() const
+{
+    return realPosition;
 }
 
 
@@ -1155,6 +1207,7 @@ void Motor::Controller::Init()
     softDisable = false;
     softBrake = false;
     softNewCurve = false;
+    preserveIntegralOnNewCurve = false;
 
     focPosition = 0;
     focCurrent = 0;
@@ -1198,9 +1251,20 @@ void Motor::Controller::Init()
 void Motor::Controller::ApplyPosAsHomeOffset()
 {
     /*
-     * 将当前编码器位置设为运行时零点，并把连续多圈坐标重新落到当前单圈。
-     * 只修改运行时控制状态；是否写入EEPROM由CAN命令层单独决定。
+     * Rebase the current encoder position to zero without interrupting the
+     * position loop.  The old implementation entered MODE_STOP, cleared the
+     * gravity-holding integral and called driver->Sleep(); a loaded joint then
+     * fell before the next command and could create a destructive current
+     * surge when torque returned.
+     *
+     * This function can be called from the CAN interrupt while the 20 kHz
+     * control interrupt is running, so publish the new coordinate frame as one
+     * atomic update.  Both measured and commanded coordinates are moved to the
+     * same value, keeping position error at zero while retaining the DCE
+     * integral that supports the joint against gravity.
      */
+    uint32_t interruptState = __get_PRIMASK();
+    __disable_irq();
     int32_t homeOffset = realLapPosition % context->MOTOR_ONE_CIRCLE_SUBDIVIDE_STEPS;
     if (homeOffset < 0)
         homeOffset += context->MOTOR_ONE_CIRCLE_SUBDIVIDE_STEPS;
@@ -1222,12 +1286,13 @@ void Motor::Controller::ApplyPosAsHomeOffset()
     softVelocity = 0;
     goalCurrent = 0;
     softCurrent = 0;
-    requestMode = MODE_STOP;
-    modeRunning = MODE_STOP;
+    requestMode = MODE_COMMAND_POSITION;
+    modeRunning = MODE_COMMAND_POSITION;
     softNewCurve = true;
+    preserveIntegralOnNewCurve = true;
     limitMoveActive = false;
-    ClearIntegral();
-    context->driver->Sleep();
+    state = STATE_FINISH;
+    __set_PRIMASK(interruptState);
 }
 
 

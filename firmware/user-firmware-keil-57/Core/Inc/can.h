@@ -35,6 +35,12 @@ extern uint8_t TxData[8];
 extern uint8_t RxData[8];
 extern uint32_t TxMailbox;
 extern float motor_temperature;
+extern volatile uint32_t canTxDropCount;
+extern volatile uint32_t canTxDeferredCount;
+extern volatile uint32_t canTxRetryCount;
+extern volatile uint32_t canRxDropCount;
+extern volatile uint32_t canErrorCount;
+extern volatile uint32_t canLastError;
 /* USER CODE END Includes */
 
 extern CAN_HandleTypeDef hcan;
@@ -46,7 +52,8 @@ extern CAN_HandleTypeDef hcan;
 void MX_CAN_Init(void);
 
 /* USER CODE BEGIN Prototypes */
-void CAN_Send(CAN_TxHeaderTypeDef* pHeader, uint8_t* data);
+HAL_StatusTypeDef CAN_Send(CAN_TxHeaderTypeDef* pHeader, uint8_t* data);
+void CAN_ProcessTxQueue(void);
 void test_can_loopback_once(void);
 /* USER CODE END Prototypes */
 

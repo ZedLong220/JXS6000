@@ -36,6 +36,13 @@ int main(int argc,char **argv) {
     CHECK(!p.Append(32,14,32,33,0,0,1,1000,1000));
     p.Clear(15); CHECK(p.Append(0,15,0,10,0,0,1,1000,1000)); CHECK(p.Start(1,15,false));
     for(unsigned t=0;t<401;++t)p.Tick(); CHECK(p.state==4 && p.error==4); // producer starvation
+    p.Clear(17); CHECK(p.Append(0,17,0,10000,0,0,1,30000,100000)); CHECK(p.Start(1,17,false));
+    run(p,400+10000); CHECK(p.Active() && p.position<10000);
+    CHECK(!p.FinishTogether(1,18)); CHECK(p.FinishTogether(1,17));
+    CHECK(p.state==3 && p.position==10000 && p.velocity==0 && p.index==0);
+    p.Clear(18); CHECK(p.Append(0,18,0,10000,0,0,1,30000,100000));
+    CHECK(p.RebaseFirstPassStart(1000,30000,100000)); CHECK(p.Start(1,18,false));
+    CHECK(p.position==1000); run(p,400+20000); CHECK(p.state==3 && p.position==10000);
     if(argc>1) {
         std::ifstream input(argv[1]); unsigned n,repeat; float start[2]; input>>n>>repeat>>start[0]>>start[1]; CHECK(input.good());
         BufferedPath axes[2]; for(auto &axis:axes)axis.Clear(21);

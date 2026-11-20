@@ -8,7 +8,10 @@ namespace SmallProject.Configs
 {
     public class JConfiguration
     {
-        public const double DriverCompatibleMaxAcceleration = 23.0;
+        // Use a conservative limit until every installed drive reports its
+        // EEPROM acceleration value to the HMI. This prevents a drive with a
+        // lower saved limit from rejecting an otherwise valid curve at load.
+        public const double DriverCompatibleMaxAcceleration = 15.0;
         public int ReductionJ1 { get; set; } = 50;
         public int ReductionJ2 { get; set; } = 100;
         public int ReductionJ3 { get; set; } = 100;

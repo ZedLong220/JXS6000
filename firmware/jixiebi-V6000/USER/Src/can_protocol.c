@@ -1,11 +1,16 @@
 #include "can_protocol.h"
 #include "host_bridge.h"
 #include "serial_cmd.h"
+#include "gripper_servo.h"
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
 
-#define POSITION_QUERY_PERIOD_MS 20U
+/* Poll one participating drive per slot. Five-axis motion therefore refreshes
+   every encoder in 50 ms without creating a synchronized ten-frame burst. */
+#define POSITION_QUERY_PERIOD_MS 10U
+#define FIXED_WAIT_QUERY_PERIOD_MS 20U
+#define POSITION_QUERY_FAILURE_TIMEOUT_MS 250U
 #define IDLE_QUERY_PERIOD_MS 200U
 #define FEEDBACK_TIMEOUT_MS 750U
 #define START_READY_TIMEOUT_MS 1500U
@@ -14,9 +19,29 @@
 #define MIN_SEGMENT_SEC 0.05f
 #define MAX_SEGMENT_SEC 120.0f
 #define MULTI_STAGE_TIMEOUT_MS 5000U
+#define SYNCHRONIZED_FINISH_LEAD_MS 2U
 /* 51200 internal steps/revolution, signed int32 targets in the 57 firmware. */
 #define MAX_TARGET_REV 40000.0f
-#define RX_QUEUE_SIZE 64U
+#define RX_QUEUE_SIZE 128U
+#define FIXED_AXIS_MASK 0x1FU
+#define FIXED_J1_MASK 0x01U
+#define FIXED_HOME_TOLERANCE_REV 0.02f
+#define FIXED_FIRST_DURATION_SEC 10.0f
+#define FIXED_J1_TO_MINUS_50_DURATION_SEC 2.0f
+#define FIXED_RETURN_HOME_DURATION_SEC 10.0f
+static uint8_t fixedReturnGripperClosed;
+#define FIXED_RETURN_GRIPPER_CLOSE_DELAY_MS \
+    ((uint32_t)(FIXED_RETURN_HOME_DURATION_SEC * 500.0f))
+#define FIXED_SERVO_WAIT_MS 1000U
+#define FIXED_J3_GRIPPER_OPEN_THRESHOLD_REV (-66.666667f) /* J3 -240 deg. */
+
+/* A path is planned from an encoder sample taken before collision checking.
+   Permit at most 0.5 joint degree of drift and rebase the first block to the
+   newest sample immediately before loading. Values are motor revolutions for
+   the installed 50/100/100/30/30/1 reductions. */
+static const float startRebaseToleranceRev[CAN_AXIS_COUNT] = {
+    0.06945f, 0.13889f, 0.13889f, 0.04167f, 0.04167f, 0.00139f
+};
 
 typedef struct {
     float positionRev;
@@ -45,7 +70,9 @@ static TrajectoryPoint path[CAN_TRAJECTORY_MAX_POINTS];
 static TrajectoryPoint activePoint;
 static uint32_t dispatchVersion[CAN_AXIS_COUNT];
 static uint32_t readySince, segmentStart, segmentDuration;
-static uint32_t lastQuery, lastStatus, txErrors;
+static uint32_t lastQuery, lastStatus, txErrors, queryFailureSince;
+static uint8_t queryFailureActive;
+static uint8_t positionQueryCursor;
 static uint8_t pathCount, pathIndex, pathPlaying, pathRepeat;
 static uint8_t oneShot, movingMask, lastError;
 static uint8_t faultNode, faultDetail;
@@ -58,13 +85,27 @@ typedef struct {
 } SplineFeedback;
 static SplineFeedback splineFeedback[CAN_AXIS_COUNT];
 static float splineStart[CAN_AXIS_COUNT], nextVelocity[CAN_AXIS_COUNT];
-static uint8_t splineEnabled, velocityReady, uploadStage, uploadIndex;
+static uint8_t splineEnabled, velocityReady, uploadStage, uploadIndex, finishBroadcast;
 static uint16_t splineSession;
 static uint32_t uploadSince, lastSplineQuery;
 static uint8_t requiredMask=CAN_AXIS_MASK, multiAxisMode;
 static uint8_t startMask, targetMask, velocityMask, stageOpen;
 static TrajectoryPoint staged;
 static uint32_t stageSince;
+
+typedef enum {
+    FIXED_SEQUENCE_OFF = 0,
+    FIXED_SEQUENCE_WAIT_HOME,
+    FIXED_SEQUENCE_MOVE_FIRST,
+    FIXED_SEQUENCE_WAIT_SERVO_0,
+    FIXED_SEQUENCE_MOVE_J1_TO_MINUS_50,
+    FIXED_SEQUENCE_WAIT_SERVO_90_FINAL,
+    FIXED_SEQUENCE_MOVE_HOME
+} FixedSequenceState;
+
+static FixedSequenceState fixedSequence;
+static uint32_t fixedServoSince;
+static uint8_t fixedGripperOpened;
 
 static int send_frame(uint16_t id, const uint8_t *data, uint8_t length)
 {
@@ -123,12 +164,25 @@ static uint8_t online_mask(uint32_t now)
     return mask;
 }
 
+static uint8_t status_online_mask(uint32_t now)
+{
+    uint8_t mask=online_mask(now);
+    if (pathPlaying && splineEnabled) {
+        for (uint8_t i=0U;i<CAN_AXIS_COUNT;++i)
+            if ((requiredMask&(1U<<i)) && splineFeedback[i].valid &&
+                splineFeedback[i].session==splineSession &&
+                now-splineFeedback[i].tick<=FEEDBACK_TIMEOUT_MS)
+                mask|=(uint8_t)(1U<<i);
+    }
+    return mask;
+}
+
 static void publish_status(void)
 {
     uint8_t data[8] = {0};
     data[0] = (uint8_t)state;
     data[1] = lastError;
-    data[2] = online_mask(HAL_GetTick());
+    data[2] = status_online_mask(HAL_GetTick());
     data[3] = movingMask;
     data[4] = state==DUAL_AXIS_FAULT && lastError==5U ? faultNode : pathCount;
     data[5] = state==DUAL_AXIS_FAULT && lastError==5U ? faultDetail :
@@ -145,7 +199,7 @@ static void set_state(DualAxisState next, uint8_t error)
     publish_status();
 }
 
-static void stop_drives(void)
+static void disable_drives(void)
 {
     uint8_t data[8] = {0};
     /* Stop every physical axis, including one with stale master feedback. */
@@ -153,12 +207,25 @@ static void stop_drives(void)
         command((uint8_t)(i+1U),CAN_CMD_STOP,data,sizeof(data));
 }
 
+static void hold_drives(void)
+{
+    uint8_t data[8] = {0};
+    for (uint8_t i=0U;i<CAN_AXIS_COUNT;++i)
+        command((uint8_t)(i+1U),CAN_CMD_HOLD_POSITION,data,sizeof(data));
+}
+
 static void fault(uint8_t error)
 {
     if (error != 5U) faultNode = faultDetail = 0U;
     SerialCmd_ResetPending();
+    fixedSequence = FIXED_SEQUENCE_OFF;
+    queryFailureActive = 0U;
     pathPlaying = pathRepeat = oneShot = movingMask = 0U;
-    stop_drives();
+    /* A controller/path fault must not remove gravity holding torque from
+       every healthy joint. The faulty drive still enforces its own encoder,
+       stall and limit interlocks. Only the explicit emergency command uses
+       disable_drives(). */
+    hold_drives();
     set_state(DUAL_AXIS_FAULT, error);
 }
 
@@ -171,7 +238,7 @@ static void drive_fault(uint8_t node, uint8_t detail)
 
 int CAN_DualAxisIsActive(void)
 {
-    return pathPlaying || oneShot;
+    return pathPlaying || oneShot || fixedSequence != FIXED_SEQUENCE_OFF;
 }
 
 int CAN_ValidateTarget(float j2, float j3, float duration)
@@ -186,6 +253,24 @@ static int query_positions(uint32_t now, uint32_t period)
     int result=0;
     if (now - lastQuery < period) return 0;
     lastQuery = now;
+
+    /* Immediate calls are used at startup/segment preparation and deliberately
+       take one complete snapshot. Periodic active polling is staggered so a
+       fixed five-axis path cannot repeatedly congest the same response slot. */
+    if (CAN_DualAxisIsActive() && period != 0U) {
+        for (uint8_t attempt=0U; attempt<CAN_AXIS_COUNT; ++attempt) {
+            uint8_t i=positionQueryCursor;
+            uint8_t next=(uint8_t)((i+1U)%CAN_AXIS_COUNT);
+            if (!(requiredMask&(1U<<i))) {
+                positionQueryCursor=next;
+                continue;
+            }
+            result=command((uint8_t)(i+1U),CAN_CMD_GET_POSITION,NULL,0U);
+            if (result==0) positionQueryCursor=next;
+            return result;
+        }
+        return 0;
+    }
     for (uint8_t i=0U;i<CAN_AXIS_COUNT;++i)
         if ((!CAN_DualAxisIsActive() || (requiredMask&(1U<<i))) &&
             command((uint8_t)(i+1U),CAN_CMD_GET_POSITION,NULL,0U)!=0) result=-1;
@@ -223,6 +308,105 @@ static int begin_point(const TrajectoryPoint *point)
     return query_positions(HAL_GetTick(), 0U);
 }
 
+static void begin_fixed_point(const TrajectoryPoint *point)
+{
+    /* CAN_DualAxisUpdate already polls the participating axes before running
+       the fixed-sequence state machine. Do not generate a second five-frame
+       query burst while changing segments. */
+    activePoint = *point;
+    movingMask = requiredMask;
+    readySince = HAL_GetTick();
+    set_state(DUAL_AXIS_STARTING, 0U);
+}
+static int queue_fixed_home(TrajectoryPoint *point)
+{
+    memset(point, 0, sizeof(*point));
+    point->duration = FIXED_RETURN_HOME_DURATION_SEC;
+    return 0;
+}
+
+static int set_gripper_angle(float angle)
+{
+    uint8_t gripperStatus[8];
+    if (Gripper_SetAngle(angle) != 0) return -1;
+    Gripper_GetStatus(gripperStatus);
+    (void)CAN_SendHostFrame(0x57U, gripperStatus, sizeof(gripperStatus));
+    return 0;
+}
+
+static void fixed_sequence_update(uint32_t now)
+{
+    TrajectoryPoint point;
+    if (fixedSequence == FIXED_SEQUENCE_WAIT_HOME) {
+        if ((online_mask(now) & FIXED_AXIS_MASK) != FIXED_AXIS_MASK) {
+            if (now - readySince >= START_READY_TIMEOUT_MS) fault(2U);
+            return;
+        }
+        for (uint8_t i = 0U; i < CAN_AXIS_COUNT; ++i) {
+            if ((FIXED_AXIS_MASK & (1U << i)) &&
+                fabsf(feedback[i].positionRev) > FIXED_HOME_TOLERANCE_REV) {
+                fault(7U);
+                return;
+            }
+        }
+        memset(&point, 0, sizeof(point));
+        point.target[0] = -2.083333f;  /* J1 -15 deg, ratio 50. */
+        point.target[1] = -19.444444f; /* J2 +70 deg, ratio 100, reversed. */
+        point.target[2] = -83.333333f; /* J3 -300 deg, ratio 100. */
+        point.target[3] = -7.500000f;  /* J4 +90 deg, ratio 30, reversed. */
+        point.target[4] = 7.500000f;   /* J5 -90 deg, ratio 30, reversed. */
+        point.duration = FIXED_FIRST_DURATION_SEC;
+        fixedSequence = FIXED_SEQUENCE_MOVE_FIRST;
+        oneShot = 1U;
+        begin_fixed_point(&point);
+        return;
+    }
+    if (fixedSequence == FIXED_SEQUENCE_WAIT_SERVO_0 &&
+        now - fixedServoSince >= FIXED_SERVO_WAIT_MS) {
+        memset(&point, 0, sizeof(point));
+        point.target[0] = -6.944444f; /* J1 -50 deg, ratio 50. */
+        point.duration = FIXED_J1_TO_MINUS_50_DURATION_SEC;
+
+        /* J2-J5 already hold the requested pose. Do not restart them with
+           near-zero moves, which can round their planned speed down to zero. */
+        requiredMask = FIXED_J1_MASK;
+        fixedSequence = FIXED_SEQUENCE_MOVE_J1_TO_MINUS_50;
+        oneShot = 1U;
+        begin_fixed_point(&point);
+        return;
+    }
+    if (fixedSequence == FIXED_SEQUENCE_WAIT_SERVO_90_FINAL &&
+        now - fixedServoSince >= FIXED_SERVO_WAIT_MS) {
+        queue_fixed_home(&point);
+        requiredMask = FIXED_AXIS_MASK;
+        fixedReturnGripperClosed = 0U;
+        fixedSequence = FIXED_SEQUENCE_MOVE_HOME;
+        oneShot = 1U;
+        begin_fixed_point(&point);
+    }
+}
+
+int CAN_FixedPickSequenceStart(void)
+{
+    if (state != DUAL_AXIS_IDLE || CAN_DualAxisIsActive()) return -1;
+    if (set_gripper_angle(0.0f) != 0) return -2;
+    pathCount = pathIndex = pathPlaying = pathRepeat = oneShot = movingMask = 0U;
+    splineEnabled = velocityReady = uploadStage = finishBroadcast = 0U;
+    multiAxisMode = startMask = targetMask = velocityMask = stageOpen = 0U;
+    requiredMask = FIXED_AXIS_MASK;
+    positionQueryCursor = 0U;
+    queryFailureActive = 0U;
+    fixedGripperOpened = 0U;
+    fixedSequence = FIXED_SEQUENCE_WAIT_HOME;
+    readySince = HAL_GetTick();
+    set_state(DUAL_AXIS_STARTING, 0U);
+    if (query_positions(HAL_GetTick(), 0U) != 0) {
+        queryFailureActive = 1U;
+        queryFailureSince = HAL_GetTick();
+    }
+    return 0;
+}
+
 static uint8_t target_reached(void)
 {
     for (uint8_t i = 0U; i < CAN_AXIS_COUNT; ++i)
@@ -250,7 +434,7 @@ static int reset_splines(void)
     memset(splineFeedback, 0, sizeof(splineFeedback));
     for (uint8_t i=0U; i<CAN_AXIS_COUNT; ++i)
         if ((requiredMask&(1U<<i)) && command((uint8_t)(i+1U), 0x0DU, data, 2U) != 0) return -1;
-    uploadStage=1U; uploadIndex=0U; uploadSince=HAL_GetTick();
+    uploadStage=1U; uploadIndex=0U; finishBroadcast=0U; uploadSince=HAL_GetTick();
     return query_splines(HAL_GetTick(),0U);
 }
 
@@ -281,8 +465,12 @@ static void update_spline(uint32_t now)
     if (state==DUAL_AXIS_STARTING) {
         if (uploadStage==0U) {
             if ((online_mask(now)&requiredMask)==requiredMask) {
-                for (uint8_t i=0U;i<CAN_AXIS_COUNT;++i)
-                    if ((requiredMask&(1U<<i)) && fabsf(feedback[i].positionRev-splineStart[i])>0.02f) { fault(6U); return; }
+                for (uint8_t i=0U;i<CAN_AXIS_COUNT;++i) {
+                    if (!(requiredMask&(1U<<i))) continue;
+                    if (fabsf(feedback[i].positionRev-splineStart[i])>
+                        startRebaseToleranceRev[i]) { fault(6U); return; }
+                    splineStart[i]=feedback[i].positionRev;
+                }
                 if (reset_splines()!=0) fault(1U);
             } else if (now-readySince>=START_READY_TIMEOUT_MS) fault(2U);
             return;
@@ -320,11 +508,28 @@ static void update_spline(uint32_t now)
         }
         return;
     }
-    if ((online_mask(now)&requiredMask)!=requiredMask) { fault(2U); return; }
+    if (!pathRepeat && !finishBroadcast &&
+        now-segmentStart>=segmentDuration-SYNCHRONIZED_FINISH_LEAD_MS) {
+        uint8_t finish[8]={0xFFU,CAN_CMD_TRAJECTORY_FINISH,CAN_PATH_PROTOCOL_VERSION,
+                           requiredMask,pathCount,0U,(uint8_t)splineSession,
+                           (uint8_t)(splineSession>>8)};
+        if (command(0U,CAN_CMD_TRAJECTORY_FINISH,finish,8U)!=0) { fault(1U); return; }
+        finishBroadcast=1U;
+        set_state(DUAL_AXIS_VERIFY_POSITION,0U);
+    }
     for (uint8_t i=0U;i<CAN_AXIS_COUNT;++i) {
         if (!(requiredMask&(1U<<i))) continue;
         if (!splineFeedback[i].valid || splineFeedback[i].session!=splineSession || now-splineFeedback[i].tick>FEEDBACK_TIMEOUT_MS) {
-            fault(4U); return;
+            /* During a buffered path the drive heartbeat proves that its local
+               encoder controller is alive. Do not abort only because a 0x23
+               telemetry reply was briefly delayed. If both channels are stale,
+               retain the encoder-timeout diagnosis; otherwise report the path
+               heartbeat/handshake failure. */
+            if (!feedback[i].valid || now-feedback[i].positionTick>FEEDBACK_TIMEOUT_MS)
+                fault(2U);
+            else
+                fault(4U);
+            return;
         }
         if (splineFeedback[i].error || splineFeedback[i].state==4U) {
             drive_fault((uint8_t)(i+1U),splineFeedback[i].error); return;
@@ -368,33 +573,71 @@ void CAN_DualAxisInit(void)
     memset(&activePoint, 0, sizeof(activePoint));
     pathCount = pathIndex = pathPlaying = pathRepeat = oneShot = 0U;
     movingMask = lastError = faultNode = faultDetail = 0U;
-    lastQuery = lastStatus = txErrors = 0U;
+    lastQuery = lastStatus = txErrors = queryFailureSince = 0U;
+    queryFailureActive = 0U;
+    positionQueryCursor = 0U;
     state = DUAL_AXIS_IDLE;
-    splineEnabled=velocityReady=uploadStage=0U;
+    splineEnabled=velocityReady=uploadStage=finishBroadcast=0U;
     splineSession=0U; lastSplineQuery=0U; requiredMask=CAN_AXIS_MASK;
     multiAxisMode=startMask=targetMask=velocityMask=stageOpen=0U;
+    fixedSequence=FIXED_SEQUENCE_OFF; fixedServoSince=0U; fixedGripperOpened=0U;
+    fixedReturnGripperClosed=0U;
     memset(splineFeedback,0,sizeof(splineFeedback));
 }
 
 void CAN_DualAxisStop(void)
 {
     SerialCmd_ResetPending();
+    fixedSequence = FIXED_SEQUENCE_OFF;
+    queryFailureActive = 0U;
     pathPlaying = pathRepeat = oneShot = movingMask = 0U;
-    stop_drives();
+    hold_drives();
     set_state(DUAL_AXIS_IDLE, 0U);
 }
 
-void CAN_DualAxisSetZero(void)
+void CAN_DualAxisEmergencyDisable(void)
+{
+    SerialCmd_ResetPending();
+    fixedSequence = FIXED_SEQUENCE_OFF;
+    pathPlaying = pathRepeat = oneShot = movingMask = 0U;
+    disable_drives();
+    set_state(DUAL_AXIS_IDLE, 0U);
+}
+
+int CAN_DualAxisSetZero(void)
 {
     uint8_t data[8] = {0};
-    CAN_DualAxisStop();
+    uint32_t now = HAL_GetTick();
+    uint8_t mask;
+
+    /* Setting a coordinate origin is not a stop command. Refuse the request
+       while any path is active instead of cancelling motion and dropping into
+       a different control state underneath the drives. */
+    if (state != DUAL_AXIS_IDLE || CAN_DualAxisIsActive()) return -1;
+    mask = online_mask(now);
+    if (mask == 0U) return -1;
+    for (uint8_t i=0U;i<CAN_AXIS_COUNT;++i)
+        if ((mask & (1U << i)) && !feedback[i].finished) return -1;
+
+    SerialCmd_ResetPending();
     pathCount = pathIndex = 0U;
+    splineEnabled = velocityReady = uploadStage = finishBroadcast = 0U;
+    multiAxisMode = startMask = targetMask = velocityMask = stageOpen = 0U;
+    requiredMask = mask;
     for (uint8_t i=0U;i<CAN_AXIS_COUNT;++i) {
-        if (command((uint8_t)(i+1U),CAN_CMD_SET_HOME,data,sizeof(data))!=0) { fault(1U); return; }
+        /* Only address drives that have fresh encoder feedback. An absent axis
+           must not make a safe zeroing operation hold the CAN bus in retry. */
+        if (!(mask & (1U << i))) continue;
+        if (command((uint8_t)(i+1U),CAN_CMD_SET_HOME,data,sizeof(data))!=0) {
+            fault(1U);
+            return -2;
+        }
         feedback[i].valid=0U; activePoint.target[i]=0.0f;
     }
-    CAN_TrajectoryClear();
-    /* Existing drive 0x15 stores home in EEPROM; it is never sent automatically. */
+    movingMask = 0U;
+    set_state(DUAL_AXIS_IDLE, 0U);
+    /* Drive 0x15 stores home in EEPROM while preserving position torque. */
+    return 0;
 }
 
 int CAN_DualAxisMove(float j2, float j3, float duration)
@@ -587,7 +830,7 @@ static void process_rx(void)
 
 void CAN_DualAxisUpdate(void)
 {
-    uint32_t now;
+    uint32_t now, queryPeriod;
     process_rx();
     if (rxOverflow) {
         rxOverflow = 0U;
@@ -597,14 +840,33 @@ void CAN_DualAxisUpdate(void)
         return;
     }
     now = HAL_GetTick();
-    if (query_positions(now, CAN_DualAxisIsActive() ?
-                        POSITION_QUERY_PERIOD_MS : IDLE_QUERY_PERIOD_MS) != 0 &&
-        CAN_DualAxisIsActive()) {
-        fault(1U);
-        return;
+    queryPeriod = CAN_DualAxisIsActive() ? POSITION_QUERY_PERIOD_MS : IDLE_QUERY_PERIOD_MS;
+    if (fixedSequence == FIXED_SEQUENCE_WAIT_SERVO_0 ||
+        fixedSequence == FIXED_SEQUENCE_WAIT_SERVO_90_FINAL)
+        queryPeriod = FIXED_WAIT_QUERY_PERIOD_MS;
+    if (now - lastQuery >= queryPeriod) {
+        if (query_positions(now, queryPeriod) != 0) {
+            if (!queryFailureActive) {
+                queryFailureActive = 1U;
+                queryFailureSince = now;
+            } else if (now - queryFailureSince >= POSITION_QUERY_FAILURE_TIMEOUT_MS) {
+                fault(1U);
+            }
+            /* Retry on the next polling interval. A single busy mailbox must
+               not abort an otherwise healthy multi-axis sequence. */
+            return;
+        }
+        queryFailureActive = 0U;
     }
+    if (queryFailureActive) return;
     if (now - lastStatus >= 500U) publish_status();
     if (!CAN_DualAxisIsActive()) return;
+    if (fixedSequence == FIXED_SEQUENCE_WAIT_HOME ||
+        fixedSequence == FIXED_SEQUENCE_WAIT_SERVO_0 ||
+        fixedSequence == FIXED_SEQUENCE_WAIT_SERVO_90_FINAL) {
+        fixed_sequence_update(now);
+        return;
+    }
     if (pathPlaying && splineEnabled) { update_spline(now); return; }
 
     if (state == DUAL_AXIS_STARTING) {
@@ -618,7 +880,46 @@ void CAN_DualAxisUpdate(void)
     if ((online_mask(now)&requiredMask) != requiredMask) { fault(2U); return; }
     /* Never complete from stale finish flags returned before the new goal. */
     if (now - segmentStart < 20U) return;
+    if (fixedSequence == FIXED_SEQUENCE_MOVE_HOME && !fixedReturnGripperClosed &&
+        now - segmentStart >= FIXED_RETURN_GRIPPER_CLOSE_DELAY_MS) {
+        if (set_gripper_angle(0.0f) != 0) { fault(8U); return; }
+        fixedReturnGripperClosed = 1U;
+    }
+    if (fixedSequence == FIXED_SEQUENCE_MOVE_FIRST && !fixedGripperOpened &&
+        feedback[2].valid &&
+        feedback[2].positionRev <= FIXED_J3_GRIPPER_OPEN_THRESHOLD_REV) {
+        if (set_gripper_angle(90.0f) != 0) { fault(8U); return; }
+        fixedGripperOpened = 1U;
+        return;
+    }
     if (target_reached()) {
+        if (fixedSequence == FIXED_SEQUENCE_MOVE_FIRST) {
+            if (set_gripper_angle(0.0f) != 0) { fault(8U); return; }
+            oneShot = movingMask = 0U;
+            fixedSequence = FIXED_SEQUENCE_WAIT_SERVO_0;
+            fixedServoSince = now;
+            set_state(DUAL_AXIS_VERIFY_POSITION, 0U);
+            return;
+        }
+        if (fixedSequence == FIXED_SEQUENCE_MOVE_J1_TO_MINUS_50) {
+            if (set_gripper_angle(90.0f) != 0) { fault(8U); return; }
+            oneShot = movingMask = 0U;
+            requiredMask = FIXED_AXIS_MASK;
+            fixedSequence = FIXED_SEQUENCE_WAIT_SERVO_90_FINAL;
+            fixedServoSince = now;
+            set_state(DUAL_AXIS_VERIFY_POSITION, 0U);
+            return;
+        }
+        if (fixedSequence == FIXED_SEQUENCE_MOVE_HOME) {
+            if (!fixedReturnGripperClosed && set_gripper_angle(0.0f) != 0) {
+                fault(8U); return;
+            }
+            fixedReturnGripperClosed = 1U;
+            fixedSequence = FIXED_SEQUENCE_OFF;
+            oneShot = movingMask = 0U;
+            set_state(DUAL_AXIS_IDLE, 0U);
+            return;
+        }
         if (pathPlaying) {
             uint8_t next = (uint8_t)(pathIndex + 1U);
             if (next == pathCount && pathRepeat) next = 0U;

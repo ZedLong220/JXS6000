@@ -7,7 +7,7 @@ namespace SmallProject.Devices.Arm.Kinematic
 {
     public static class MotionTiming
     {
-        public static double MinimumSeconds(IReadOnlyList<double> from,IReadOnlyList<double> to,
+        private static void Validate(IReadOnlyList<double> from,IReadOnlyList<double> to,
             IReadOnlyList<double> reductions,int[] axes,JConfiguration settings)
         {
             if(!settings.TryValidateMotion(out string error)) throw new ArgumentException(error);
@@ -15,6 +15,12 @@ namespace SmallProject.Devices.Arm.Kinematic
                 axes.Distinct().Count()!=axes.Length || axes.Any(i=>i<0 || i>=6) ||
                 from.Any(v=>!double.IsFinite(v)) || to.Any(v=>!double.IsFinite(v)) ||
                 reductions.Any(v=>!double.IsFinite(v) || v<=0)) throw new ArgumentException("运动时间参数无效。");
+        }
+
+        public static double MinimumSeconds(IReadOnlyList<double> from,IReadOnlyList<double> to,
+            IReadOnlyList<double> reductions,int[] axes,JConfiguration settings)
+        {
+            Validate(from,to,reductions,axes,settings);
             double time=axes.Max(i=>Math.Abs(to[i]-from[i]))/settings.Speed;
             double acceleration=settings.MotorMaxAcceleration,velocity=settings.MotorMaxVelocity;
             double accelerationDistance=velocity*velocity/acceleration;
@@ -27,5 +33,6 @@ namespace SmallProject.Devices.Arm.Kinematic
             }
             return Math.Max(time,.05);
         }
+
     }
 }

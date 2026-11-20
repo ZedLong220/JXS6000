@@ -26,6 +26,14 @@ Check(Math.Abs(zero.A) < .00001 && Math.Abs(zero.B) < .00001 && Math.Abs(zero.C)
 var legacy = new double[] { 0, 0, 180, 0, -90, 0 };
 Check(JointCoordinateMap.ToModel(legacy).All(v => v == 0), "Legacy home maps to model zero");
 Check(JointCoordinateMap.ToLegacy(JointCoordinateMap.ToModel(legacy)).SequenceEqual(legacy), "Coordinate round trip");
+var firstEncoderRead=new double[]{0,10,-20,0,0,0};
+var freshEncoderRead=new double[]{0,10.0002,-20.0003,0,0,0};
+var autoClosed=ContinuousPathPlanner.WithRepeatClosure(
+    new[]{new double[]{0,40,-50,0,0,0}},freshEncoderRead,true);
+Check(autoClosed.Count==2 && autoClosed[^1].SequenceEqual(freshEncoderRead),
+    "Repeat closure uses the same fresh encoder sample as the planner start");
+Check(!autoClosed[^1].SequenceEqual(firstEncoderRead),
+    "Repeat closure does not retain an earlier noisy encoder sample");
 var sampleAngles = new double[] {10,-20,30,-40,50,-60};
 Check(JointCoordinateMap.ToLegacy(sampleAngles).Zip(Joint6D_t.defult.a).Select(p=>p.First-p.Second).SequenceEqual(sampleAngles), "Motor relative targets retain original home mapping");
 var targets = new[] {
@@ -53,8 +61,9 @@ var expandedLowerLegacy = JointCoordinateMap.ToLegacy(new double[] {0,-180,-330,
 var expandedUpperLegacy = JointCoordinateMap.ToLegacy(new double[] {0,250,180,0,0,0});
 Check(expandedLowerLegacy[1] == -180 && expandedUpperLegacy[1] == 250, "J2 mirrored model range maps to legacy -180 through 250 degrees");
 Check(expandedLowerLegacy[2] == -150 && expandedUpperLegacy[2] == 360, "J3 motor coordinates preserve the existing 180 degree home offset");
-Check(model.WithinLimits(new double[] {0,0,0,0,-90,0}) && model.WithinLimits(new double[] {0,0,0,0,360,0}), "J5 keeps -90 degrees and extends to +360 degrees");
-Check(!model.WithinLimits(new double[] {0,0,0,0,-91,0}) && !model.WithinLimits(new double[] {0,0,0,0,361,0}), "J5 limits");
+Check(model.WithinLimits(new double[] {0,0,0,0,-95,0}) && model.WithinLimits(new double[] {0,0,0,0,360,0}), "J5 range is -95 through +360 degrees");
+Check(model.WithinLimits(new double[] {0,0,0,0,-90,0}) && model.WithinLimits(new double[] {0,0,0,0,-91,0}), "J5 accepts the fixed pose and a small negative feedback deviation");
+Check(!model.WithinLimits(new double[] {0,0,0,0,-95.01,0}) && !model.WithinLimits(new double[] {0,0,0,0,360.01,0}), "J5 rejects angles outside the expanded limits");
 var compatibility = new Dof6kinematic(path);
 var legacyPose = new Pose6D_t();
 Check(compatibility.SolveFK(new Joint6D_t(legacy), legacyPose) && Math.Abs(legacyPose.Z-zero.Z) < 1e-9, "Legacy callers use new URDF FK");
@@ -113,7 +122,7 @@ File.WriteAllText(Path.Combine(AppContext.BaseDirectory,"continuous-samples.json
             new double[]{0,-.5,.5,0,0,0},new double[]{0,-.5,-.5,0,0,0},
             new double[]{0,-1,-.5,0,0,0},new double[6] },new double[]{1,1,1,1},scale,false,jointIndices:new[]{1,2}).Samples}));
 var reductions=new[]{30.0,150,150,100,100,1};
-var originalDirections=new[]{1,-1,1,-1,1,1};
+var installedDirections=new[]{1,-1,1,-1,-1,1};
 var sixScale=reductions.Select((ratio,i)=>MotorCoordinateMap.Direction(i)*ratio/360).ToArray();
 var fiveScale=sixScale.Take(5).ToArray();
 var fiveTargets=new[]{new double[]{.5,-.5,.5,.5,.5,0},new double[]{-.5,-.5,-.5,-.5,-.5,0},
@@ -188,10 +197,10 @@ for(int axis=0;axis<6;++axis) {
     var single=ContinuousPathPlanner.Build(model,new double[6],new[]{singleTarget},new[]{1.0},
         new[]{sixScale[axis]},false,jointIndices:new[]{axis});
     var singleHost=MultiAxisProtocol.Encode(single,new[]{axis},false);
-    Check(MotorCoordinateMap.Direction(axis)==-originalDirections[axis],$"J{axis+1} reverses its original motor direction");
+    Check(MotorCoordinateMap.Direction(axis)==installedDirections[axis],$"J{axis+1} uses the installed motor direction");
     var targetFrame=singleHost.Single(c=>c.Code==0x53 && c.Data[1]==0);
     double sentRevolutions=BitConverter.ToSingle(targetFrame.Data,4);
-    Check(Math.Abs(sentRevolutions-.5*sixScale[axis])<1e-7,$"J{axis+1} wire target applies the new sign once");
+    Check(Math.Abs(sentRevolutions-.5*sixScale[axis])<1e-7,$"J{axis+1} wire target applies the installed sign once");
     Check(Math.Abs(sentRevolutions*360/(MotorCoordinateMap.Direction(axis)*reductions[axis])-.5)<1e-5,
         $"J{axis+1} encoder inverse recovers the positive model angle");
     Check(single.ValidationPaths().Count()==1,$"J{axis+1} identical single move is checked once");
@@ -238,9 +247,15 @@ var threeAxes=new[]{0,1,2};
 var recordedTargets=new[]{new double[]{10,10,10,0,0,0},new double[]{-10,-10,30,0,0,0},new double[6],new double[6]};
 var smoothed=ContinuousPathPlanner.Build(model,new double[6],recordedTargets,new[]{2.0,3,4,.05},
     threeAxes.Select(i=>sixScale[i]).ToArray(),true,toleranceMm:3,jointIndices:threeAxes);
-Check(smoothed.Segments.Count==5,"Three recorded points plus duplicate loop endpoint contain no dwell segment");
-Check(smoothed.Segments.Take(smoothed.Segments.Count-1).All(s=>s.EndVelocity.Any(v=>Math.Abs(v)>1e-5)),
-    "Every non-reversing interior vector corner retains pass-through velocity");
+Check(smoothed.Segments.Count==7,"Three recorded points plus duplicate loop endpoint contain no dwell segment and a rounded loop seam");
+Check(smoothed.Segments.All(s=>s.EndVelocity.Any(v=>Math.Abs(v)>1e-5)),
+    "Every non-reversing vector corner, including the loop seam, retains pass-through velocity");
+Check(smoothed.Segments[^1].End.SequenceEqual(smoothed.Start) &&
+    smoothed.Segments[^1].EndVelocity.Any(v=>Math.Abs(v)>1e-5),
+    "Repeat closure returns to the exact start with a nonzero continuous seam velocity");
+Check(smoothed.FirstSamples.Count>0 && smoothed.FirstSamples[0].SequenceEqual(new double[6]) &&
+    smoothed.Segments[0].Controls[1].Zip(smoothed.Segments[0].Controls[0],(a,b)=>Math.Abs(a-b)).Any(d=>d>1e-8),
+    "The first lap starts at the exact recorded position while later laps carry a nonzero seam entry velocity");
 Check(smoothed.MaximumDeviationMm<=2.7 && smoothed.Samples.All(model.WithinLimits),
     "Adjustable smoothing retains its geometric allowance and model limits");
 for(int i=0;i<smoothed.Segments.Count;i++) {
@@ -308,13 +323,99 @@ var reportedLoop=ContinuousPathPlanner.Build(model,new double[6],reportedTargets
     reportedTimes,threeAxes.Select(i=>MotorCoordinateMap.Direction(i)*installedReductions[i]/360).ToArray(),true,
     toleranceMm:20,jointIndices:threeAxes,maxVelocity:fastSettings.MotorMaxVelocity,
     maxAcceleration:fastSettings.MotorMaxAcceleration,maxJerk:fastSettings.MotorMaxJerk);
-Check(reportedLoop.Segments.Count==5 && reportedLoop.Segments[^1].End.SequenceEqual(reportedLoop.Start),
-    "Reported three-point 20 mm loop is a closed five-block path");
+Check(reportedLoop.Segments.Count==7 && reportedLoop.Segments[^1].End.SequenceEqual(reportedLoop.Start) &&
+    reportedLoop.Segments[^1].EndVelocity.Any(v=>Math.Abs(v)>1e-5),
+    "Reported three-point 20 mm loop has a rounded, non-stopping closure");
 var reportedHost=MultiAxisProtocol.Encode(reportedLoop,threeAxes,true);
-Check(reportedHost.Count(c=>c.Code==0x54)==5 && reportedHost.Last().Data.SequenceEqual(new byte[]{2}),
-    "Reported five-block loop is completely committed before repeat start");
+Check(reportedHost.Count(c=>c.Code==0x54)==7 && reportedHost.Last().Data.SequenceEqual(new byte[]{2}),
+    "Reported rounded loop is completely committed before repeat start");
 File.WriteAllLines(Path.Combine(AppContext.BaseDirectory,"reported-three-point-host.txt"),
     reportedHost.Select(c=>$"{c.Code:X2} {Convert.ToHexString(c.Data)}"));
+var activeAxes=new[]{1,2};
+var activeLegacyStart=new double[]{0,-20,-68.5,0,0,0};
+var activeLegacyTargets=new[]{new double[]{0,46,-120.8,0,0,0},new double[6],activeLegacyStart.ToArray()};
+var activeClosed=ContinuousPathPlanner.WithRepeatClosure(activeLegacyTargets,activeLegacyStart,true);
+var activeTimes=new List<double>(); var activePrevious=activeLegacyStart;
+foreach(var target in activeClosed) {
+    activeTimes.Add(MotionTiming.MinimumSeconds(activePrevious,target,installedReductions,activeAxes,fastSettings));
+    activePrevious=target;
+}
+var activeLoop=ContinuousPathPlanner.Build(model,JointCoordinateMap.ToModel(activeLegacyStart),
+    activeClosed.Select(JointCoordinateMap.ToModel).ToArray(),activeTimes,
+    activeAxes.Select(i=>MotorCoordinateMap.Direction(i)*installedReductions[i]/360).ToArray(),true,
+    toleranceMm:20,jointIndices:activeAxes,maxVelocity:fastSettings.MotorMaxVelocity,
+    maxAcceleration:fastSettings.MotorMaxAcceleration,maxJerk:fastSettings.MotorMaxJerk);
+Check(activeLoop.Segments.Count==7 && activeLoop.Segments.All(s=>s.EndVelocity.Any(v=>Math.Abs(v)>1e-5)) &&
+    activeLoop.Segments[^1].End.SequenceEqual(activeLoop.Start),
+    "The operator's active J2/J3 three-point loop passes every point and the loop seam without a dwell");
+// At run time the arm happened to be at the middle record (0,0). Closing each
+// lap through that button-click position produces two exact out-and-back tips.
+// After the one-time approach, the repeating plan starts at record 1 instead.
+var clickedAtMiddle=new double[6];
+var nearestEntry=ContinuousPathPlanner.RotateLoopToNearest(activeLegacyTargets,clickedAtMiddle,activeAxes);
+Check(nearestEntry.StartIndex==1 && nearestEntry.MaximumErrorDegrees<1e-9 &&
+    nearestEntry.Targets[0].SequenceEqual(activeLegacyTargets[1]) &&
+    nearestEntry.Targets[1].SequenceEqual(activeLegacyTargets[2]) &&
+    nearestEntry.Targets[2].SequenceEqual(activeLegacyTargets[0]),
+    "A loop started at the recorded middle point rotates to record 2 while preserving circular table order");
+var oldClosureTargets=ContinuousPathPlanner.WithRepeatClosure(activeLegacyTargets,clickedAtMiddle,true);
+var oldClosureTimes=new List<double>(); var oldPrevious=clickedAtMiddle;
+foreach(var target in oldClosureTargets) {
+    oldClosureTimes.Add(MotionTiming.MinimumSeconds(oldPrevious,target,installedReductions,activeAxes,fastSettings));
+    oldPrevious=target;
+}
+var oldClosure=ContinuousPathPlanner.Build(model,JointCoordinateMap.ToModel(clickedAtMiddle),
+    oldClosureTargets.Select(JointCoordinateMap.ToModel).ToArray(),oldClosureTimes,
+    activeAxes.Select(i=>MotorCoordinateMap.Direction(i)*installedReductions[i]/360).ToArray(),true,
+    toleranceMm:20,jointIndices:activeAxes,maxVelocity:fastSettings.MotorMaxVelocity,
+    maxAcceleration:fastSettings.MotorMaxAcceleration,maxJerk:fastSettings.MotorMaxJerk);
+Check(oldClosure.Segments.Count(s=>s.EndVelocity.All(v=>Math.Abs(v)<1e-5))>=2,
+    "Closing through the button-click middle point explains the two forced stops seen on the machine");
+var recordedCycleTargets=ContinuousPathPlanner.WithRepeatClosure(activeLegacyTargets.Skip(1).ToArray(),activeLegacyTargets[0],true);
+var recordedCycleTimes=new List<double>(); var recordedPrevious=activeLegacyTargets[0];
+foreach(var target in recordedCycleTargets) {
+    recordedCycleTimes.Add(MotionTiming.MinimumSeconds(recordedPrevious,target,installedReductions,activeAxes,fastSettings));
+    recordedPrevious=target;
+}
+var recordedCycle=ContinuousPathPlanner.Build(model,JointCoordinateMap.ToModel(activeLegacyTargets[0]),
+    recordedCycleTargets.Select(JointCoordinateMap.ToModel).ToArray(),recordedCycleTimes,
+    activeAxes.Select(i=>MotorCoordinateMap.Direction(i)*installedReductions[i]/360).ToArray(),true,
+    toleranceMm:20,jointIndices:activeAxes,maxVelocity:fastSettings.MotorMaxVelocity,
+    maxAcceleration:fastSettings.MotorMaxAcceleration,maxJerk:fastSettings.MotorMaxJerk);
+Check(recordedCycle.Segments.All(s=>s.EndVelocity.Any(v=>Math.Abs(v)>1e-5)) &&
+    recordedCycle.Segments[^1].End.SequenceEqual(recordedCycle.Start),
+    "After the one-time approach, the same three records form a closed loop with no forced stop");
+int packedLaps=3;
+var packedBody=Enumerable.Range(0,packedLaps)
+    .SelectMany(_=>nearestEntry.Targets.Skip(1).Concat(nearestEntry.Targets.Take(1)).Select(q=>q.ToArray())).ToList();
+packedBody.RemoveAt(packedBody.Count-1);
+var packedTargets=ContinuousPathPlanner.WithRepeatClosure(packedBody,clickedAtMiddle,true);
+var packedTimes=new List<double>(); var packedPrevious=clickedAtMiddle;
+foreach(var target in packedTargets) {
+    packedTimes.Add(MotionTiming.MinimumSeconds(packedPrevious,target,installedReductions,activeAxes,fastSettings));
+    packedPrevious=target;
+}
+var packedCycle=ContinuousPathPlanner.Build(model,JointCoordinateMap.ToModel(clickedAtMiddle),
+    packedTargets.Select(JointCoordinateMap.ToModel).ToArray(),packedTimes,
+    activeAxes.Select(i=>MotorCoordinateMap.Direction(i)*installedReductions[i]/360).ToArray(),true,
+    toleranceMm:20,jointIndices:activeAxes,maxVelocity:fastSettings.MotorMaxVelocity,
+    maxAcceleration:fastSettings.MotorMaxAcceleration,maxJerk:fastSettings.MotorMaxJerk);
+Check(packedCycle.Segments.Count==19 && packedCycle.Segments.All(s=>s.EndVelocity.Any(v=>Math.Abs(v)>1e-5)) &&
+    packedCycle.Segments[^1].End.SequenceEqual(packedCycle.Start),
+    "Three visual laps use ordinary smooth joins and one infrequent exact drive-buffer seam");
+var packedHost=MultiAxisProtocol.Encode(packedCycle,activeAxes,true);
+Check(packedHost.Count(c=>c.Code==0x54)==19 && packedHost.All(c=>c.Data.Length<=8) &&
+    packedHost.Last().Data.SequenceEqual(new byte[]{2}),
+    "Packed three-lap path fits the protocol-4 drive buffer and starts in repeat mode");
+using(var wire=new StreamWriter(Path.Combine(AppContext.BaseDirectory,"packed-active-loop-wire.txt"))) {
+    string F(float v)=>v.ToString("R",System.Globalization.CultureInfo.InvariantCulture);
+    wire.WriteLine($"{activeAxes.Length} {packedCycle.Segments.Count} 1 "+string.Join(" ",packedCycle.Start.Select(F)));
+    foreach(var s in packedCycle.Segments)
+        wire.WriteLine(F(s.Duration)+" "+string.Join(" ",s.End.Select(F))+" "+string.Join(" ",s.EndVelocity.Select(F)));
+}
+Console.WriteLine($"Active J2/J3 cycle: {oldClosure.Segments.Sum(s=>(double)s.Duration):F3}s with forced reversals -> " +
+    $"{recordedCycle.Segments.Sum(s=>(double)s.Duration):F3}s closed loop; packed average " +
+    $"{packedCycle.Segments.Sum(s=>(double)s.Duration)/packedLaps:F3}s/lap");
 foreach(var segment in fastProfile.Segments) foreach(int axis in threeAxes) {
     var c=segment.Controls.Select(q=>q[axis]*installedReductions[axis]/360).ToArray();
     var v=Enumerable.Range(0,5).Select(k=>5*(c[k+1]-c[k])/segment.Duration).ToArray();

@@ -24,20 +24,22 @@ namespace SmallProject.Diagnostics
                 Check(!App.Core.Serial.IsOpen, "Serial must stay disconnected");
                 var zero = new double[6];
                 var testArm=new SmallProject.Devices.Arm.JykerArm();
-                var expectedDirections=new[]{-1,1,-1,1,-1,-1};
+                var expectedDirections=new[]{1,-1,1,-1,-1,1};
                 for(int axis=0;axis<6;axis++) {
                     var motor=testArm.motorJ[axis];
-                    Check(motor.Direction==expectedDirections[axis],$"J{axis+1} uses the reversed harness direction");
+                    Check(motor.Direction==expectedDirections[axis],$"J{axis+1} uses the installed harness direction");
                     foreach(double target in new[]{1.0,-1.0,0.0}) {
                         float revolutions=(float)(target*motor.Direction*motor.Reduction/360);
                         testArm.RecievePos(axis+1,revolutions,true);
                         Check(Math.Abs(motor.Angle-target)<1e-6,$"J{axis+1} signed feedback round trip {target}");
+                        Check(Math.Abs(testArm.GetCurrentModelJointsSnapshot()[axis]-target)<1e-6,
+                            $"J{axis+1} feedback immediately updates the shared current-joint state");
                     }
                 }
                 var directionTarget=new double[]{.5,-.5,.5,.5,.5,30};
                 var directionPlan=ContinuousPathPlanner.Build(testArm.dof6Solver.Model,zero,new[]{directionTarget},
                     new[]{2.0},testArm.motorJ.Select(m=>m.Direction*m.Reduction/360).ToArray(),false);
-                Check((await preview.ValidatePathAsync(directionPlan.Samples)).ok,"Reversed motor signs preserve the model collision path");
+                Check((await preview.ValidatePathAsync(directionPlan.Samples)).ok,"Installed motor signs preserve the model collision path");
                 Check(window.JykerKinematicContrl.TryReadPathTolerance(out double defaultTolerance) && defaultTolerance==20,
                     "Recorded paths default to the visible 20 mm smoothing allowance");
                 foreach(string invalid in new[]{"NaN","0","51","invalid"}) {
@@ -140,6 +142,18 @@ namespace SmallProject.Diagnostics
                     "Single-axis selector defaults to J3 and motion is disabled while disconnected");
                 var selections=new[]{window.cb_MoveJ1,window.cb_MoveJ2,window.cb_MoveJ3,window.cb_MoveJ4,window.cb_MoveJ5,window.cb_MoveJ6};
                 var inputs=new[]{window.tb_Joint1,window.tb_Joint2,window.tb_Joint3,window.tb_Joint4,window.tb_Joint5,window.tb_Joint6};
+                var actualDisplays=new[]{window.tb_ActualJ1,window.tb_ActualJ2,window.tb_ActualJ3,window.tb_ActualJ4,window.tb_ActualJ5,window.tb_ActualJ6};
+                string targetBeforeFeedback=window.tb_Joint3.Text;
+                bool? selectionBeforeFeedback=window.cb_MoveJ3.IsChecked;
+                var liveMotor=App.Core.Jyker.motorJ[2];
+                float liveRevolutions=(float)(7.0*liveMotor.Direction*liveMotor.Reduction/360.0);
+                App.Core.Jyker.RecievePos(3,liveRevolutions,true);
+                await window.Dispatcher.InvokeAsync(()=>{},System.Windows.Threading.DispatcherPriority.ContextIdle);
+                Check(actualDisplays[2].Text.Contains("7.000°"),"Live J3 feedback appears in the independent actual-angle display");
+                Check(window.tb_Joint3.Text==targetBeforeFeedback && window.cb_MoveJ3.IsChecked==selectionBeforeFeedback,
+                    "Live feedback cannot overwrite the J3 target or change its participation checkbox");
+                App.Core.Jyker.RecievePos(3,0,true);
+                await window.Dispatcher.InvokeAsync(()=>{},System.Windows.Threading.DispatcherPriority.ContextIdle);
                 foreach(var selection in selections) selection.IsChecked=false;
                 Check(!window.JykerKinematicContrl.TryReadMotionTargets(Array.Empty<int>(),out _),
                     "No selected axis cannot initiate movement");

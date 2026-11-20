@@ -14,16 +14,20 @@
 #define CAN_CMD_POSITION_TIME 0x06U
 #define CAN_CMD_TRAJECTORY_POINT 0x08U
 #define CAN_CMD_STOP 0x09U
+#define CAN_CMD_HOLD_POSITION 0x0EU
 #define CAN_CMD_SET_HOME 0x15U
 #define CAN_CMD_GET_POSITION 0x23U
 #define CAN_CMD_CONTROLLER_STATUS 0x38U
 #define CAN_CMD_TRAJECTORY_CONTROL 0x3AU
 #define CAN_CMD_HOST_ACK 0x3BU
+#define CAN_CMD_FIXED_PICK_SEQUENCE 0x58U
+#define CAN_CMD_EMERGENCY_DISABLE 0x59U
 #define CAN_CMD_HOST_J2_POSITION_TIME 0x60U
 #define CAN_CMD_HOST_J3_POSITION_TIME 0x61U
 #define CAN_CMD_HOST_J2_TRAJECTORY_POINT 0x62U
 #define CAN_CMD_HOST_J3_TRAJECTORY_POINT 0x63U
 #define CAN_CMD_TRAJECTORY_SYNC 0x66U
+#define CAN_CMD_TRAJECTORY_FINISH 0x67U
 
 #define CAN_TRAJECTORY_MAX_POINTS 32U
 
@@ -44,11 +48,13 @@ void CAN_DualAxisInit(void);
 void CAN_DualAxisUpdate(void);
 int CAN_DualAxisMove(float j2TargetRev, float j3TargetRev, float durationSec);
 void CAN_DualAxisStop(void);
+void CAN_DualAxisEmergencyDisable(void);
 int CAN_DualAxisIsActive(void);
 int CAN_ValidateTarget(float j2TargetRev, float j3TargetRev, float durationSec);
-void CAN_DualAxisSetZero(void);
+int CAN_DualAxisSetZero(void);
 DualAxisState CAN_DualAxisGetState(void);
 void CAN_DualAxisPrintStatus(void);
+int CAN_FixedPickSequenceStart(void);
 
 void CAN_TrajectoryClear(void);
 int CAN_TrajectoryEnqueue(float j2TargetRev, float j3TargetRev, float durationSec);

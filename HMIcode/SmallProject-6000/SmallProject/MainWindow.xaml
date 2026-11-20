@@ -89,7 +89,7 @@
                 </TabItem>
             </TabControl>
             <GroupBox Header="夹爪舵机 · PA0" Grid.Row="1" x:Name="gb_ClawControl" IsEnabled="False">
-                <Grid rubyer:GridHelper.RowDefinitions="40,40,40,*">
+                <Grid rubyer:GridHelper.RowDefinitions="40,40,40,40,*">
                     <Grid rubyer:GridHelper.ColumnDefinitions="80,*,65">
                         <TextBlock Margin="4" VerticalAlignment="Center">舵机角度：</TextBlock>
                         <Slider Grid.Column="1" x:Name="pg_ClawAngle" Minimum="0" Maximum="180" Value="90"
@@ -105,7 +105,9 @@
                         <Button x:Name="bt_ClawStop" Margin="3">关闭PWM输出</Button>
                         <Button Grid.Column="1" x:Name="bt_ClawLoopStart" Margin="3">查询PWM状态</Button>
                     </Grid>
-                    <TextBlock Grid.Row="3" x:Name="tb_GripperStatus" Margin="5" TextWrapping="Wrap"
+                    <Button Grid.Row="3" x:Name="bt_FixedPickSequence" Margin="3"
+                            ToolTip="主控内置动作（J1～J5参与，J6保持原位）：J3接近首个-250°时舵机到90°且不停顿续接-300°；末尾舵机90°后五轴直接回零，舵机同步回0°">执行固定取放路径</Button>
+                    <TextBlock Grid.Row="4" x:Name="tb_GripperStatus" Margin="5" TextWrapping="Wrap"
                                Text="上电无脉冲；50Hz，500～2500µs。显示为指令值，无舵机位置反馈。" />
                 </Grid>
             </GroupBox>
@@ -235,60 +237,66 @@
                         <TextBlock Margin="2" VerticalAlignment="Center">圆滑 / mm:</TextBlock>
                         <TextBox x:Name="tb_PathTolerance" Grid.Column="1" Margin="2" Text="20" />
                     </Grid>
-                    <Grid rubyer:GridHelper.ColumnDefinitions="*,*" Grid.Row="7">
+                    <Grid rubyer:GridHelper.ColumnDefinitions="80,*,105" Grid.Row="7">
                         <Grid Grid.Column="0" Margin="2">
                             <CheckBox x:Name="cb_MoveJ1" VerticalAlignment="Center" ToolTip="勾选后参与运动；修改角度会自动勾选">J1 / °</CheckBox>
                         </Grid>
                         <Grid Grid.Column="1" Margin="2">
                             <TextBox x:Name="tb_Joint1">0</TextBox>
                         </Grid>
+                        <TextBlock x:Name="tb_ActualJ1" Grid.Column="2" Margin="4,2" VerticalAlignment="Center" TextAlignment="Right">实际 0.000°</TextBlock>
                     </Grid>
-                    <Grid rubyer:GridHelper.ColumnDefinitions="*,*" Grid.Row="8">
+                    <Grid rubyer:GridHelper.ColumnDefinitions="80,*,105" Grid.Row="8">
                         <Grid Grid.Column="0" Margin="2">
                             <CheckBox x:Name="cb_MoveJ2" VerticalAlignment="Center" ToolTip="勾选后参与运动；修改角度会自动勾选">J2 / °</CheckBox>
                         </Grid>
                         <Grid Grid.Column="1" Margin="2">
                             <TextBox x:Name="tb_Joint2">0</TextBox>
                         </Grid>
+                        <TextBlock x:Name="tb_ActualJ2" Grid.Column="2" Margin="4,2" VerticalAlignment="Center" TextAlignment="Right">实际 0.000°</TextBlock>
                     </Grid>
-                    <Grid rubyer:GridHelper.ColumnDefinitions="*,*" Grid.Row="9">
+                    <Grid rubyer:GridHelper.ColumnDefinitions="80,*,105" Grid.Row="9">
                         <Grid Grid.Column="0" Margin="2">
                             <CheckBox x:Name="cb_MoveJ3" VerticalAlignment="Center" ToolTip="勾选后参与运动；修改角度会自动勾选">J3 / °</CheckBox>
                         </Grid>
                         <Grid Grid.Column="1" Margin="2">
                             <TextBox x:Name="tb_Joint3">0</TextBox>
                         </Grid>
+                        <TextBlock x:Name="tb_ActualJ3" Grid.Column="2" Margin="4,2" VerticalAlignment="Center" TextAlignment="Right">实际 0.000°</TextBlock>
                     </Grid>
-                    <Grid rubyer:GridHelper.ColumnDefinitions="*,*" Grid.Row="10">
+                    <Grid rubyer:GridHelper.ColumnDefinitions="80,*,105" Grid.Row="10">
                         <Grid Grid.Column="0" Margin="2">
                             <CheckBox x:Name="cb_MoveJ4" VerticalAlignment="Center" ToolTip="勾选后参与运动；修改角度会自动勾选">J4 / °</CheckBox>
                         </Grid>
                         <Grid Grid.Column="1" Margin="2">
                             <TextBox x:Name="tb_Joint4">0</TextBox>
                         </Grid>
+                        <TextBlock x:Name="tb_ActualJ4" Grid.Column="2" Margin="4,2" VerticalAlignment="Center" TextAlignment="Right">实际 0.000°</TextBlock>
                     </Grid>
-                    <Grid rubyer:GridHelper.ColumnDefinitions="*,*" Grid.Row="11">
+                    <Grid rubyer:GridHelper.ColumnDefinitions="80,*,105" Grid.Row="11">
                         <Grid Grid.Column="0" Margin="2">
                             <CheckBox x:Name="cb_MoveJ5" VerticalAlignment="Center" ToolTip="勾选后参与运动；修改角度会自动勾选">J5 / °</CheckBox>
                         </Grid>
                         <Grid Grid.Column="1" Margin="2">
                             <TextBox x:Name="tb_Joint5">0</TextBox>
                         </Grid>
+                        <TextBlock x:Name="tb_ActualJ5" Grid.Column="2" Margin="4,2" VerticalAlignment="Center" TextAlignment="Right">实际 0.000°</TextBlock>
                     </Grid>
-                    <Grid rubyer:GridHelper.ColumnDefinitions="*,*" Grid.Row="12">
+                    <Grid rubyer:GridHelper.ColumnDefinitions="80,*,105" Grid.Row="12">
                         <Grid Grid.Column="0" Margin="2">
                             <CheckBox x:Name="cb_MoveJ6" VerticalAlignment="Center" ToolTip="勾选后参与运动；修改角度会自动勾选">J6 / °</CheckBox>
                         </Grid>
                         <Grid Grid.Column="1" Margin="2">
                             <TextBox x:Name="tb_Joint6" ToolTip="第六轴角度范围 -180°～180°">0</TextBox>
                         </Grid>
+                        <TextBlock x:Name="tb_ActualJ6" Grid.Column="2" Margin="4,2" VerticalAlignment="Center" TextAlignment="Right">实际 0.000°</TextBlock>
                     </Grid>
                     <Grid rubyer:GridHelper.ColumnDefinitions="*,*" Grid.Row="13">
                         <Grid Grid.Column="0" Margin="2">
                             <Button x:Name="bt_ApplyHomePosition" >设置当前位置为零</Button>
                         </Grid>
                         <Grid Grid.Column="1" Margin="2">
-                            <Button x:Name="bt_StopNow" >立即停止</Button>
+                            <Button x:Name="bt_StopNow" ToolTip="停止运动并继续位置闭环抱住当前位置">停止并保持</Button>
                         </Grid>
                     </Grid>
                     <Grid rubyer:GridHelper.ColumnDefinitions="*,*" Grid.Row="14">
@@ -326,7 +334,7 @@
                     <Grid rubyer:GridHelper.ColumnDefinitions="*,*" Grid.Row="19">
                         <Button x:Name="bt_MoveFivePath" Margin="2" ToolTip="按表格顺序运动当前勾选轴；每条点位必须已记录所选轴">勾选轴点位连续运动</Button>
                         <CheckBox x:Name="cb_RepeatFivePath" Grid.Column="1" VerticalAlignment="Center"
-                                  ToolTip="按记录顺序运行后回到本次启动位置，重复直到停止；每圈末端停车">循环（回起点）</CheckBox>
+                                  ToolTip="从离当前位置最近的记录点开始，按表格环形顺序闭合循环；可圆滑的点保持连续速度，直到点击停止">循环（记录点闭合）</CheckBox>
                     </Grid>
                     <Grid rubyer:GridHelper.ColumnDefinitions="*,*" Grid.Row="18">
                         <Grid Grid.Column="0" Margin="2">
@@ -340,8 +348,9 @@
                         <Grid Grid.Column="0" Margin="2">
                             <Button x:Name="bt_StartDetect" >开启视频</Button>
                         </Grid>
-                        <Grid Grid.Column="1" Margin="2" Visibility="Hidden">
-                            <Button x:Name="bt_aa"  Cursor="Hand">连接语音助手</Button>
+                        <Grid Grid.Column="1" Margin="2">
+                            <Button x:Name="bt_EmergencyDisable" Cursor="Hand"
+                                    ToolTip="仅在需要释放电机输出时使用；该操作会关闭六轴保持力矩">紧急失能</Button>
                         </Grid>
                     </Grid>
                     <Grid Grid.Row="21" rubyer:GridHelper.ColumnDefinitions="*,*">

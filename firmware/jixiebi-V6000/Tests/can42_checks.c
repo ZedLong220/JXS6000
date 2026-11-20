@@ -16,6 +16,7 @@ static uint32_t now;
 static Frame sent[32768];
 static unsigned count, checks;
 static int failId = -1;
+static int failOnceId = -1;
 static uint16_t servoPulse;
 static int failServo;
 void GripperHardware_Init(void) { servoPulse=0U; failServo=0; }
@@ -33,6 +34,7 @@ uint32_t HAL_CAN_GetTxMailboxesFreeLevel(CAN_HandleTypeDef *h) { (void)h; return
 uint32_t HAL_CAN_IsTxMessagePending(CAN_HandleTypeDef *h,uint32_t m) { (void)h;(void)m;return 0; }
 HAL_StatusTypeDef HAL_CAN_AddTxMessage(CAN_HandleTypeDef *h,CAN_TxHeaderTypeDef *tx,uint8_t *data,uint32_t *mailbox)
 {
+    if ((int)tx->StdId == failOnceId) { failOnceId=-1; return HAL_ERROR; }
     if ((int)tx->StdId == failId) return HAL_ERROR;
     CHECK(count < sizeof(sent)/sizeof(sent[0]));
     sent[count].id = (uint16_t)tx->StdId;
@@ -59,7 +61,7 @@ void Error_Handler(void){abort();}
 
 static void reset(void)
 {
-    now=100; count=uartLength=0; failId=-1;
+    now=100; count=uartLength=0; failId=failOnceId=-1;
     CAN_DualAxisInit(); SerialCmd_Init(); Gripper_Init();
 }
 static unsigned occurrences(uint16_t id)
@@ -166,6 +168,10 @@ static void path_and_capacity(void)
     CHECK(CAN_DualAxisIsActive());
     CAN_DualAxisStop();
     CHECK(!CAN_DualAxisIsActive());
+    for(uint8_t node=1;node<=6;++node) {
+        CHECK(occurrences((uint16_t)((node<<7)|0x0E))==1);
+        CHECK(occurrences((uint16_t)((node<<7)|0x09))==0);
+    }
 }
 static void failures(void)
 {
@@ -185,7 +191,8 @@ static void failures(void)
     CHECK(CAN_DualAxisMove(2,2,1)!=0);
     now+=751; CAN_DualAxisUpdate();
     CHECK(CAN_DualAxisGetState()==DUAL_AXIS_FAULT);
-    CHECK(occurrences(0x109)==1 && occurrences(0x189)==1);
+    CHECK(occurrences(0x10E)==1 && occurrences(0x18E)==1);
+    CHECK(occurrences(0x109)==0 && occurrences(0x189)==0);
     reset(); positions(0,0,1); CAN_DualAxisUpdate();
     CHECK(CAN_DualAxisMove(1,1,1)==0); CAN_DualAxisUpdate();
     now+=6001; positions(0,0,1); CAN_DualAxisUpdate();
@@ -212,8 +219,12 @@ static void transport(void)
     CHECK(CAN_DualAxisGetState()==DUAL_AXIS_RUNNING);
     CHECK(strstr(uartText,"t03B8")!=NULL);
     CAN_DualAxisStop(); HostBridge_Process();
+    reset(); control(0x59,NULL,0);
+    CHECK(last(0x3B)->data[6]==1);
+    for(uint8_t node=1;node<=6;++node)
+        CHECK(occurrences((uint16_t)((node<<7)|0x09))==1);
     reset();
-    for(unsigned i=0;i<70;++i)position(2,0,1);
+    for(unsigned i=0;i<140;++i)position(2,0,1);
     CAN_DualAxisUpdate();
     CHECK(CAN_DualAxisGetState()==DUAL_AXIS_FAULT);
 }
@@ -265,9 +276,15 @@ static void continuous_path(void)
     CHECK(CAN_DualAxisGetState()==DUAL_AXIS_RUNNING && occurrences(0x66)==1);
     CHECK(last(0x66)->len==8 && last(0x66)->data[2]==4 && last(0x66)->data[3]==6 && last(0x66)->data[4]==2);
     unsigned commits=occurrences(0x10C);
-    now+=2000; positions(1,-1,0); spline_status(2,2,2,session,0); spline_status(3,2,2,session,0); CAN_DualAxisUpdate();
+    /* A delayed J3 position reply must not stop a healthy local spline. Its
+       fresh path heartbeat is the authoritative running liveness signal. */
+    now+=800; position(2,.4f,0); spline_status(2,2,2,session,0); spline_status(3,2,2,session,0); CAN_DualAxisUpdate();
+    CHECK(CAN_DualAxisIsActive() && (last(0x38)->data[2]&6U)==6U);
+    now+=1200; positions(1,-1,0); spline_status(2,2,2,session,0); spline_status(3,2,2,session,0); CAN_DualAxisUpdate();
     CHECK(CAN_DualAxisIsActive() && occurrences(0x10C)==commits && occurrences(0x66)==1);
-    now+=2050; positions(0,0,1); spline_status(2,3,2,session,0); spline_status(3,3,2,session,0); CAN_DualAxisUpdate();
+    now+=2019; positions(0,0,0); spline_status(2,2,2,session,0); spline_status(3,2,2,session,0); CAN_DualAxisUpdate();
+    CHECK(occurrences(0x67)==1 && last(0x67)->len==8 && last(0x67)->data[3]==6);
+    now+=31; positions(0,0,1); spline_status(2,3,2,session,0); spline_status(3,3,2,session,0); CAN_DualAxisUpdate();
     CHECK(CAN_DualAxisGetState()==DUAL_AXIS_IDLE);
     reset(); positions(0,0,1); CAN_DualAxisUpdate(); spline_load();
     now+=1501; positions(0,0,1); CAN_DualAxisUpdate();
@@ -316,13 +333,24 @@ static void five_axis_protocol(void)
     CAN_DualAxisUpdate(); control(0x3A,&action,1);
     now+=1501; for(uint8_t node=1;node<=5;++node)position(node,0,1); CAN_DualAxisUpdate();
     CHECK(CAN_DualAxisGetState()==DUAL_AXIS_FAULT && occurrences(0x66)==0);
-    for(uint8_t node=1;node<=6;++node)CHECK(occurrences((uint16_t)((node<<7)|9))>0);
+    for(uint8_t node=1;node<=6;++node) {
+        CHECK(occurrences((uint16_t)((node<<7)|0x0E))>0);
+        CHECK(occurrences((uint16_t)((node<<7)|0x09))==0);
+    }
     reset(); five_host_start(63);
     for(unsigned i=0;i<32;++i) { five_stage((uint16_t)i,63,1.0f,0); d[0]=(uint8_t)i; control(0x54,d,2); CHECK(CAN_TrajectoryCount()==i+1); }
     CHECK(CAN_MultiStage(32,1.0f)!=0);
-    CAN_DualAxisSetZero();
-    for(uint8_t node=1;node<=6;++node)CHECK(occurrences((uint16_t)((node<<7)|0x15))==1);
+    CHECK(CAN_DualAxisSetZero()!=0); /* never cancel an active buffered path to zero */
+    for(uint8_t node=1;node<=6;++node)CHECK(occurrences((uint16_t)((node<<7)|0x15))==0);
     for(unsigned i=0;i<count;++i)CHECK((sent[i].id>>7)!=7);
+
+    reset();
+    for(uint8_t node=1;node<=5;++node)position(node,0,1);
+    CAN_DualAxisUpdate();
+    CHECK(CAN_DualAxisSetZero()==0);
+    for(uint8_t node=1;node<=5;++node)
+        CHECK(occurrences((uint16_t)((node<<7)|0x15))==1);
+    CHECK(occurrences((uint16_t)((6U<<7)|0x15))==0); /* offline J6 is not addressed */
 
     reset(); five_host_start(7); five_stage(0,7,1.0f,0);
     serial_line("O");
@@ -332,6 +360,20 @@ static void five_axis_protocol(void)
     CHECK(CAN_TrajectoryCount()==1 && last(0x3B)->data[6]==1);
     now+=5001; serial_line("t05420000");
     CHECK(CAN_TrajectoryCount()==1 && last(0x3B)->data[6]==0);
+
+    /* J4 may move slightly while the HMI checks the planned path. Rebase a
+       sub-0.5-degree drift to the latest encoder sample before block upload. */
+    reset(); five_host_start(8); five_stage(0,8,1.0f,0); d[0]=0; d[1]=0;
+    control(0x54,d,2); CHECK(CAN_TrajectoryCount()==1);
+    position(4,0.03f,1); action=1; control(0x3A,&action,1);
+    {
+        Frame *resetFrame=last(0x20D); float p0;
+        CHECK(resetFrame!=NULL && resetFrame->len==2);
+        uint16_t rebaseSession=(uint16_t)(resetFrame->data[0]|((uint16_t)resetFrame->data[1]<<8));
+        spline_status(4,0,0,rebaseSession,0); CAN_DualAxisUpdate();
+        memcpy(&p0,last(0x20A)->data,4);
+        CHECK(fabsf(p0-0.03f)<0.00001f);
+    }
 }
 static void gripper_commands(void)
 {
@@ -359,12 +401,179 @@ static void gripper_commands(void)
     reset();{uint8_t old[2]={3,63};control(0x50,old,2);CHECK(last(0x3B)->data[6]==0);}
 }
 
+static void fixed_feedback(const float pose[6])
+{
+    static const uint8_t nodes[]={1,2,3,4,5};
+    for(unsigned i=0;i<sizeof(nodes);++i)position(nodes[i],pose[nodes[i]-1],1);
+    CAN_DualAxisUpdate();
+}
+
+static void fixed_check_target(const float expected[6])
+{
+    float target;
+    CHECK(CAN_DualAxisGetState()==DUAL_AXIS_RUNNING);
+    static const uint8_t nodes[]={1,2,3,4,5};
+    for(unsigned i=0;i<sizeof(nodes);++i) {
+        uint8_t node=nodes[i];
+        Frame *f=last((uint16_t)((node<<7)|0x08));
+        CHECK(f!=NULL && f->len==8);
+        memcpy(&target,f->data,4);
+        CHECK(fabsf(target-expected[node-1])<0.00001f);
+    }
+    CHECK(last((uint16_t)((6U<<7)|0x08))==NULL);
+}
+
+static void fixed_commit(const float current[6],const float expected[6])
+{
+    fixed_feedback(current);
+    fixed_check_target(expected);
+}
+
+static void fixed_finish(const float target[6])
+{
+    now+=25;
+    fixed_feedback(target);
+}
+
+static void fixed_return_feedback(const float start[6],uint32_t elapsed)
+{
+    for(uint8_t node=1;node<=5;++node)
+        position(node,start[node-1]*(1.0f-(float)elapsed/10000.0f),elapsed>=10000U);
+    CAN_DualAxisUpdate();
+}
+
+static void staggered_position_queries(void)
+{
+    static const float home[6]={0};
+    unsigned before[5];
+
+    reset();
+    control(0x58,NULL,0);
+    fixed_feedback(home);
+    CAN_DualAxisUpdate();
+    CHECK(CAN_DualAxisGetState()==DUAL_AXIS_RUNNING);
+    for(uint8_t node=1;node<=5;++node)
+        before[node-1]=occurrences((uint16_t)((node<<7)|0x23));
+
+    now+=9; CAN_DualAxisUpdate();
+    for(uint8_t node=1;node<=5;++node)
+        CHECK(occurrences((uint16_t)((node<<7)|0x23))==before[node-1]);
+
+    for(uint8_t expected=1;expected<=5;++expected) {
+        now+=(expected==1?1:10);
+        CAN_DualAxisUpdate();
+        for(uint8_t node=1;node<=5;++node)
+            CHECK(occurrences((uint16_t)((node<<7)|0x23))==
+                  before[node-1]+(node<=expected?1U:0U));
+    }
+    CAN_DualAxisStop();
+}
+
+static void fixed_pick_sequence(void)
+{
+    static const float home[6]={0};
+    static const float nearFirst[6]={-2.083333f,-19.444444f,-66.666667f,-7.5f,7.5f,0.0f};
+    static const float first[6]={-2.083333f,-19.444444f,-83.333333f,-7.5f,7.5f,0.0f};
+    static const float second[6]={-6.944444f,-19.444444f,-83.333333f,-7.5f,7.5f,0.0f};
+    unsigned beforeThreshold[5], beforeSecond[5];
+    float target;
+    reset();
+    control(0x58,NULL,0);
+    CHECK(last(0x3B)->data[6]==1 && CAN_DualAxisIsActive());
+    CHECK(CAN_DualAxisGetState()==DUAL_AXIS_STARTING);
+    CHECK(last(0x38)->data[6]==0x1FU);
+    CHECK(occurrences((uint16_t)((4U<<7)|0x23))!=0U);
+    fixed_feedback(home);
+    CAN_DualAxisUpdate();
+    fixed_check_target(first);
+    for(uint8_t node=1;node<=5;++node)
+        beforeThreshold[node-1]=occurrences((uint16_t)((node<<7)|0x08));
+    fixed_finish(nearFirst);
+    CHECK(CAN_DualAxisGetState()==DUAL_AXIS_RUNNING && servoPulse==1500U);
+    CHECK(last(0x57)!=NULL && last(0x57)->data[6]==1U);
+    /* Opening the gripper at J3=-240 deg must not restart any axis. */
+    for(uint8_t node=1;node<=5;++node)
+        CHECK(occurrences((uint16_t)((node<<7)|0x08))==beforeThreshold[node-1]);
+    fixed_finish(first);
+    CHECK(CAN_DualAxisGetState()==DUAL_AXIS_VERIFY_POSITION && servoPulse==500U);
+    CHECK(last(0x57)!=NULL && last(0x57)->data[6]==1U);
+    CHECK(CAN_DualAxisIsActive() && last(0x38)->data[3]==0U);
+    CHECK(CAN_FixedPickSequenceStart()!=0 && CAN_DualAxisSetZero()!=0);
+    unsigned firstCloseStatus=occurrences(0x57);
+    now+=999; fixed_feedback(first);
+    CHECK(CAN_DualAxisGetState()==DUAL_AXIS_VERIFY_POSITION);
+    CHECK(occurrences(0x57)==firstCloseStatus); /* close once, keep the wait deadline */
+    now+=1; CAN_DualAxisUpdate();
+    CHECK(CAN_DualAxisGetState()==DUAL_AXIS_STARTING);
+    CHECK(last(0x38)->data[6]==0x01U);
+    for(uint8_t node=1;node<=5;++node)
+        beforeSecond[node-1]=occurrences((uint16_t)((node<<7)|0x08));
+    fixed_feedback(first);
+    CHECK(CAN_DualAxisGetState()==DUAL_AXIS_RUNNING);
+    CHECK(occurrences((uint16_t)((1U<<7)|0x08))==beforeSecond[0]+1U);
+    for(uint8_t node=2;node<=5;++node)
+        CHECK(occurrences((uint16_t)((node<<7)|0x08))==beforeSecond[node-1]);
+    memcpy(&target,last((uint16_t)((1U<<7)|0x08))->data,4);
+    CHECK(fabsf(target-second[0])<0.00001f);
+    fixed_finish(second);
+    CHECK(CAN_DualAxisGetState()==DUAL_AXIS_VERIFY_POSITION && servoPulse==1500U);
+    CHECK(last(0x38)->data[6]==0x1FU);
+    now+=999; fixed_feedback(second);
+    CHECK(CAN_DualAxisGetState()==DUAL_AXIS_VERIFY_POSITION);
+    now+=1; CAN_DualAxisUpdate();
+    CHECK(CAN_DualAxisGetState()==DUAL_AXIS_STARTING && servoPulse==1500U);
+    fixed_commit(second,home);
+    for(uint8_t node=1;node<=5;++node) {
+        float duration;
+        memcpy(&duration,last((uint16_t)((node<<7)|0x08))->data+4,4);
+        CHECK(duration==10.0f);
+    }
+    unsigned beforeReturnClose=occurrences(0x57);
+    for(uint32_t elapsed=100;elapsed<5000U;elapsed+=100U) {
+        now+=100;
+        fixed_return_feedback(second,elapsed);
+        CHECK(CAN_DualAxisGetState()==DUAL_AXIS_RUNNING && servoPulse==1500U);
+    }
+    now+=99; fixed_return_feedback(second,4999U);
+    CHECK(servoPulse==1500U && occurrences(0x57)==beforeReturnClose);
+    now+=1; fixed_return_feedback(second,5000U);
+    CHECK(CAN_DualAxisGetState()==DUAL_AXIS_RUNNING && servoPulse==500U);
+    CHECK(occurrences(0x57)==beforeReturnClose+1U);
+    for(uint32_t elapsed=5100;elapsed<=10000U;elapsed+=100U) {
+        now+=100;
+        fixed_return_feedback(second,elapsed);
+    }
+    CHECK(CAN_DualAxisGetState()==DUAL_AXIS_IDLE && !CAN_DualAxisIsActive());
+    CHECK(servoPulse==500U && last(0x57)!=NULL && last(0x57)->data[6]==1U);
+    CHECK(occurrences(0x57)==beforeReturnClose+1U);
+
+    /* A failed first-pose close must fault and hold every drive, not advance. */
+    reset(); control(0x58,NULL,0);
+    fixed_feedback(home); CAN_DualAxisUpdate();
+    fixed_finish(nearFirst);
+    failServo=1; fixed_finish(first);
+    CHECK(CAN_DualAxisGetState()==DUAL_AXIS_FAULT && last(0x38)->data[1]==8U);
+    CHECK(!CAN_DualAxisIsActive());
+    for(uint8_t node=1;node<=6;++node) {
+        CHECK(occurrences((uint16_t)((node<<7)|0x0E))==1U);
+        CHECK(occurrences((uint16_t)((node<<7)|0x09))==0U);
+    }
+
+    reset(); control(0x58,NULL,0);
+    for(uint8_t node=1;node<=5;++node)
+        position(node,node==1?0.021f:0.0f,1);
+    CAN_DualAxisUpdate();
+    CHECK(CAN_DualAxisGetState()==DUAL_AXIS_FAULT && last(0x38)->data[1]==7U);
+}
+
 int main(void)
 {
     repeated_moves(); path_and_capacity(); failures(); transport();
     continuous_path();
     five_axis_protocol();
     gripper_commands();
+    staggered_position_queries();
+    fixed_pick_sequence();
     printf("CAN42 CHECKS PASSED: %u\n",checks);
     return 0;
 }

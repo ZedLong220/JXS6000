@@ -31,6 +31,7 @@ namespace SmallProject.WindowController
             m.bt_MoveJoint.Click += Bt_MoveJoint_Click;
             m.bt_MoveSingleAxis.Click += Bt_MoveSingleAxis_Click;
             m.bt_StopNow.Click += Bt_StopNow_Click;
+            m.bt_EmergencyDisable.Click += Bt_EmergencyDisable_Click;
             m.bt_ConnectAi.Click += Bt_ConnectAi_Click;
             m.bt_AddRecord.Click += Bt_AddRecord_Click;
             m.bt_DeleteRecord.Click += Bt_DeleteRecord_Click;
@@ -42,6 +43,7 @@ namespace SmallProject.WindowController
             m.bt_ClawFull.Click += async (_,_) => await SendGripperAsync(180);
             m.bt_ClawStop.Click += async (_,_) => await SendGripperCommandAsync(0x56,Array.Empty<byte>());
             m.bt_ClawLoopStart.Click += async (_,_) => await SendGripperCommandAsync(0x57,Array.Empty<byte>());
+            m.bt_FixedPickSequence.Click += async (_,_) => await StartFixedPickSequenceAsync();
             m.pg_ClawAngle.ValueChanged += (_,_) => m.tb_ClawAngle.Text=$"{m.pg_ClawAngle.Value:F0}°";
             App.Core.Serial.GripperStatusReceived += (angle,pulse,enabled) => m.Dispatcher.BeginInvoke(new Action(() =>
                 m.tb_GripperStatus.Text=$"PWM：{(enabled?"已启用":"已关闭")}；指令角度 {angle:F1}°，脉宽 {pulse}µs（无位置反馈）"));
@@ -52,9 +54,82 @@ namespace SmallProject.WindowController
         //连接语音助手
         private Task SendGripperAsync(float angle) => SendGripperCommandAsync(0x55,BitConverter.GetBytes(angle));
 
+        private async Task StartFixedPickSequenceAsync()
+        {
+            if(!App.Core.Serial.IsOpen) { JLog.Info("请先打开连接。"); return; }
+            if(loopRunning || recording || App.Core.Serial.ControllerState!=0) {
+                JLog.Info("主控当前不在空闲状态，请先停止现有运动。");
+                return;
+            }
+            loopRunning=true;
+            loopCancellation=new CancellationTokenSource();
+            CancellationToken token=loopCancellation.Token;
+            long statusVersion=App.Core.Serial.ControllerStatusVersion;
+            long completionCount=App.Core.Serial.ControllerCompletionCount;
+            SetFixedSequenceControls(false);
+
+            M.bt_MoveLoopStop.IsEnabled=true;
+            try {
+                var frame=SmallProject.Serials.Slcan.SlcanParser.ParseSlcanFrameStr(0,0x58,Array.Empty<byte>());
+                if(!await App.Core.Serial.SendBatchAndWaitForAckAsync(new[]{frame},token))
+                {
+                    JLog.Info("固定取放路径被主控拒绝：请确认主控空闲并已更新固件。");
+                    return;
+                }
+                JLog.Info("固定取放路径已启动：主控将确认J1～J5在线且位于零点（J6不参与），然后执行 (-15,70,-300,90,-90,0)，J3到-240°左右时舵机打开到90° → 到位后舵机回0° → (-50,70,-300,90,-90,0) → 舵机90° → J1～J5同步回零，回零开始时舵机同步回0°，使J3回到-240°左右时舵机已关闭。J6保持原位。");
+                if(!await WaitForMovementCompletionAsync(statusVersion,completionCount,token)) return;
+
+                int[] fixedAxes={0,1,2,3,4};
+                double[]? actual=await App.Core.Jyker.ReadCurrentModelJointsAsync(
+                    jointIndices:fixedAxes,cancellationToken:token);
+                if(actual==null)
+                    JLog.Info("固定取放路径已完成，但最终编码器位置刷新超时。");
+                else
+                    JLog.Info($"固定取放路径已完成：{string.Join("，",fixedAxes.Select(i=>$"J{i+1}={actual[i]:F3}°"))}。");
+            }
+            catch(OperationCanceledException) { JLog.Info("固定取放路径已停止。"); }
+            catch(Exception ex) {
+                App.Core.Jyker.StopNow();
+                JLog.Error(ex);
+                JLog.Info("固定取放路径异常，已请求停止并保持当前位置。");
+            }
+            finally {
+                loopRunning=false;
+                loopCancellation?.Dispose();
+                loopCancellation=null;
+                SetFixedSequenceControls(App.Core.Serial.IsOpen);
+                M.bt_MoveLoopStop.IsEnabled=false;
+            }
+        }
+
+        private void SetFixedSequenceControls(bool enabled)
+        {
+            M.bt_MoveJoint.IsEnabled=enabled;
+            M.bt_MoveSingleAxis.IsEnabled=enabled;
+            M.bt_MoveFivePath.IsEnabled=enabled;
+            M.bt_MoveLoop.IsEnabled=enabled;
+            M.bt_FixedPickSequence.IsEnabled=enabled;
+            M.bt_ApplyHomePosition.IsEnabled=enabled;
+            M.bt_AddRecord.IsEnabled=enabled;
+            M.bt_DeleteRecord.IsEnabled=enabled;
+            M.bt_MoveArmHand.IsEnabled=enabled;
+            M.bt_ConnectAi.IsEnabled=enabled;
+            M.bt_ClawApply.IsEnabled=enabled;
+            M.bt_ClawHome.IsEnabled=enabled;
+            M.bt_ClawFull.IsEnabled=enabled;
+            M.bt_ClawStop.IsEnabled=enabled;
+            M.bt_ClawLoopStart.IsEnabled=enabled;
+            M.pg_ClawAngle.IsEnabled=enabled;
+        }
+
         private async Task SendGripperCommandAsync(int command,byte[] data)
         {
             if(!App.Core.Serial.IsOpen) { JLog.Info("请先打开连接。"); return; }
+            if(loopRunning || App.Core.Serial.ControllerState!=0)
+            {
+                JLog.Info("主控正在执行路径，请先停止或等待完成后再操作夹爪。");
+                return;
+            }
             try {
                 var frame=SmallProject.Serials.Slcan.SlcanParser.ParseSlcanFrameStr(0,command,data);
                 if(!await App.Core.Serial.SendBatchAndWaitForAckAsync(new[]{frame}))
@@ -75,11 +150,19 @@ namespace SmallProject.WindowController
             
         }
 
-        //设置立刻停止
+        // Stop motion while retaining closed-loop holding torque.
         private void Bt_StopNow_Click(object sender, System.Windows.RoutedEventArgs e)
         {
             loopCancellation?.Cancel();
             App.Core.Jyker.StopNow();
+            JLog.Info("已请求停止运动，驱动板继续抱住当前位置。");
+        }
+
+        private void Bt_EmergencyDisable_Click(object sender, System.Windows.RoutedEventArgs e)
+        {
+            loopCancellation?.Cancel();
+            App.Core.Jyker.EmergencyDisable();
+            JLog.Info("已请求紧急失能：六轴驱动输出将关闭。");
         }
 
         //设置当前位置为0位
@@ -91,6 +174,7 @@ namespace SmallProject.WindowController
                 return;
             }
             App.Core.Jyker.ApplyHomePosition();
+            JLog.Info("已请求将在线关节当前位置设为零；驱动板将持续保持位置力矩，不会主动失能。");
         }
 
         private async void Bt_AddRecord_Click(object sender, System.Windows.RoutedEventArgs e)
@@ -190,7 +274,11 @@ namespace SmallProject.WindowController
 
         private async void Bt_MoveLoop_Click(object sender, System.Windows.RoutedEventArgs e)
         {
-            if (loopRunning || recording) return;
+            if (loopRunning || recording || App.Core.Serial.ControllerState!=0)
+            {
+                JLog.Info("主控正在执行路径，请先停止或等待完成。");
+                return;
+            }
             if (!App.Core.Serial.IsOpen)
             {
                 JLog.Info("请先连接机械臂，再启动固定往返运动。");
@@ -201,6 +289,7 @@ namespace SmallProject.WindowController
             loopCancellation = new CancellationTokenSource();
             CancellationToken token = loopCancellation.Token;
             M.bt_MoveLoop.IsEnabled = false;
+            M.bt_FixedPickSequence.IsEnabled = false;
             M.bt_MoveSingleAxis.IsEnabled = M.bt_MoveFivePath.IsEnabled = M.bt_MoveJoint.IsEnabled = false;
             M.bt_MoveLoopStop.IsEnabled = true;
             M.bt_AddRecord.IsEnabled = false;
@@ -281,6 +370,7 @@ namespace SmallProject.WindowController
                 loopCancellation = null;
                 bool connected = App.Core.Serial.IsOpen;
                 M.bt_MoveLoop.IsEnabled = connected;
+                M.bt_FixedPickSequence.IsEnabled = connected;
                 M.bt_MoveSingleAxis.IsEnabled = M.bt_MoveFivePath.IsEnabled = M.bt_MoveJoint.IsEnabled = connected;
                 M.bt_MoveLoopStop.IsEnabled = false;
                 M.bt_AddRecord.IsEnabled = connected;
@@ -332,6 +422,11 @@ namespace SmallProject.WindowController
         private async void Bt_MoveFivePath_Click(object sender, System.Windows.RoutedEventArgs e)
         {
             if (loopRunning || recording || !App.Core.Serial.IsOpen) return;
+            if(App.Core.Serial.ControllerState!=0)
+            {
+                JLog.Info("主控正在执行路径，请先停止或等待完成。");
+                return;
+            }
             var records=App.Core.JointRecords.ToArray();
             if (records.Length<2) { JLog.Info("请先记录至少两个点位。"); return; }
             int[] axes=M.JykerKinematicContrl.SelectedMotionAxes;
@@ -349,6 +444,7 @@ namespace SmallProject.WindowController
             loopRunning=true; loopCancellation=new CancellationTokenSource();
             var token=loopCancellation.Token;
             M.bt_MoveSingleAxis.IsEnabled=M.bt_MoveFivePath.IsEnabled=M.bt_MoveLoop.IsEnabled=M.bt_MoveJoint.IsEnabled=false;
+            M.bt_FixedPickSequence.IsEnabled=false;
             M.bt_AddRecord.IsEnabled=M.bt_DeleteRecord.IsEnabled=false;
             M.bt_MoveLoopStop.IsEnabled=true;
             try
@@ -356,7 +452,44 @@ namespace SmallProject.WindowController
                 var current=await App.Core.Jyker.ReadCurrentModelJointsAsync(jointIndices:axes,cancellationToken:token);
                 if(current==null) { JLog.Info($"点位路径停止：{axisNames}编码器反馈不完整。"); return; }
                 var targets=records.Select(r=>r.MotionTarget(current,axes)).ToList();
-                if(repeat) targets.Add(current.ToArray());
+                if(repeat)
+                {
+                    // A closed loop has no privileged first point. Start from
+                    // the recorded point nearest the current encoder position
+                    // while preserving the table's circular order. This avoids
+                    // a needless long positioning move (and its strict final
+                    // arrival check) when the arm is already at record 2 or 3.
+                    var loopEntry=ContinuousPathPlanner.RotateLoopToNearest(targets,current,axes);
+                    int startIndex=loopEntry.StartIndex;
+                    targets=loopEntry.Targets.ToList();
+                    bool needsApproach=loopEntry.MaximumErrorDegrees>0.1;
+                    if(needsApproach)
+                    {
+                        long approachVersion=App.Core.Serial.ControllerStatusVersion;
+                        long approachCompletion=App.Core.Serial.ControllerCompletionCount;
+                        if(!await App.Core.Jyker.QueueContinuousPathAsync(
+                            new[]{JointCoordinateMap.ToLegacy(targets[0])},
+                            samples=>M.JykerPreviewContrl.ValidatePathAsync(samples,token),false,token,
+                            jointIndices:axes,toleranceMm:1.0))
+                        {
+                            JLog.Info("点位循环未启动：无法到达第1个记录点。"); return;
+                        }
+                        JLog.Info($"{axisNames}正在进入循环：先到达最近的第{startIndex+1}个记录点，再连续循环。");
+                        if(!await WaitForMovementCompletionAsync(approachVersion,approachCompletion,token)) return;
+                    }
+                    else JLog.Info($"{axisNames}已在第{startIndex+1}个记录点附近，直接开始连续循环。");
+                    // Put several visual laps in one 32-block drive cycle. The
+                    // crossings between those laps are ordinary one-piece
+                    // corner blends; only the much less frequent buffer wrap
+                    // has to pass the exact encoder start with a split blend.
+                    // This shortens the visible gap without exceeding the
+                    // configured velocity, acceleration or jerk limits.
+                    int packedLaps=Math.Min(3,Math.Max(1,15/targets.Count));
+                    var oneLap=targets.Skip(1).Concat(targets.Take(1)).Select(q=>q.ToArray()).ToArray();
+                    targets=Enumerable.Range(0,packedLaps).SelectMany(_=>oneLap.Select(q=>q.ToArray())).ToList();
+                    targets.RemoveAt(targets.Count-1); // QueueContinuousPath appends the exact repeat closure.
+                    JLog.Info($"循环衔接优化：每{packedLaps}圈才经过一次驱动缓存接缝，其余圈连续圆滑通过。");
+                }
                 long version=App.Core.Serial.ControllerStatusVersion;
                 long completion=App.Core.Serial.ControllerCompletionCount;
                 if(!await App.Core.Jyker.QueueContinuousPathAsync(targets.Select(JointCoordinateMap.ToLegacy).ToArray(),
@@ -364,7 +497,7 @@ namespace SmallProject.WindowController
                     JLog.Info("点位路径未启动：请查看规划、碰撞检查或逐帧确认日志。"); return;
                 }
                 JLog.Info($"{axisNames}点位路径已提交：按表格顺序执行{records.Length}个点位"+
-                    (repeat?"，回到本次起点后重复，点击停止路径结束。":"，最终点停车并等待参与轴编码器确认。"));
+                    (repeat?"，从最近记录点按表格环形顺序闭合循环，点击停止路径结束。":"，最终点停车并等待参与轴编码器确认。"));
                 if(!await WaitForMovementCompletionAsync(version,completion,token,repeat)) return;
                 var actual=await App.Core.Jyker.ReadCurrentModelJointsAsync(jointIndices:axes,cancellationToken:token);
                 if(actual!=null) M.JykerKinematicContrl.ApplyModelJoints(actual);
@@ -377,6 +510,7 @@ namespace SmallProject.WindowController
                 loopRunning=false; loopCancellation?.Dispose(); loopCancellation=null;
                 bool connected=App.Core.Serial.IsOpen;
                 M.bt_MoveSingleAxis.IsEnabled=M.bt_MoveFivePath.IsEnabled=M.bt_MoveLoop.IsEnabled=M.bt_MoveJoint.IsEnabled=connected;
+                M.bt_FixedPickSequence.IsEnabled=connected;
                 M.bt_AddRecord.IsEnabled=M.bt_DeleteRecord.IsEnabled=connected;
                 M.bt_MoveLoopStop.IsEnabled=false;
             }
@@ -391,6 +525,11 @@ namespace SmallProject.WindowController
         {
             if (loopRunning || recording) return;
             if (!App.Core.Serial.IsOpen) { JLog.Info("请先连接机械臂。"); return; }
+            if(App.Core.Serial.ControllerState!=0)
+            {
+                JLog.Info("主控正在执行路径，请先停止或等待完成。");
+                return;
+            }
             int[] axes=singleAxis ? new[]{M.cb_SingleAxis.SelectedIndex}
                 : M.JykerKinematicContrl.SelectedMotionAxes;
             if(!M.JykerKinematicContrl.TryReadMotionTargets(axes,out var angles)) return;
@@ -400,6 +539,7 @@ namespace SmallProject.WindowController
             var token=loopCancellation.Token;
             M.bt_MoveSingleAxis.IsEnabled = M.bt_MoveJoint.IsEnabled = false;
             M.bt_MoveFivePath.IsEnabled=M.bt_MoveLoop.IsEnabled=false;
+            M.bt_FixedPickSequence.IsEnabled=false;
             M.bt_MoveLoopStop.IsEnabled=true;
             try
             {
@@ -420,6 +560,7 @@ namespace SmallProject.WindowController
             finally {
                 loopRunning=false; loopCancellation?.Dispose(); loopCancellation=null;
                 M.bt_MoveSingleAxis.IsEnabled=M.bt_MoveJoint.IsEnabled=M.bt_MoveFivePath.IsEnabled=M.bt_MoveLoop.IsEnabled=App.Core.Serial.IsOpen;
+                M.bt_FixedPickSequence.IsEnabled=App.Core.Serial.IsOpen;
                 M.bt_MoveLoopStop.IsEnabled=false;
             }
         }

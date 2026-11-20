@@ -36,6 +36,31 @@ namespace SmallProject.Devices.Arm.Kinematic
         private const double Steps = 51200;
         private static double RoundStep(float value) => Math.Round((double)(value * (float)Steps), MidpointRounding.AwayFromZero) / Steps;
 
+        public static IReadOnlyList<double[]> WithRepeatClosure(
+            IReadOnlyList<double[]> targets, double[] start, bool repeat)
+        {
+            if(start.Length!=6 || start.Any(v=>!double.IsFinite(v)) ||
+                targets.Any(target=>target.Length!=6 || target.Any(v=>!double.IsFinite(v))))
+                throw new ArgumentException("循环路径端点无效");
+            var result=targets.Select(target=>target.ToArray()).ToList();
+            if(repeat) result.Add(start.ToArray());
+            return result;
+        }
+
+        public static (IReadOnlyList<double[]> Targets,int StartIndex,double MaximumErrorDegrees)
+            RotateLoopToNearest(IReadOnlyList<double[]> targets,double[] current,int[] axes)
+        {
+            if(targets.Count==0 || current.Length!=6 || current.Any(v=>!double.IsFinite(v)) ||
+                axes.Length==0 || axes.Distinct().Count()!=axes.Length || axes.Any(i=>i<0 || i>=6) ||
+                targets.Any(q=>q.Length!=6 || q.Any(v=>!double.IsFinite(v))))
+                throw new ArgumentException("循环入口参数无效");
+            int index=Enumerable.Range(0,targets.Count)
+                .OrderBy(k=>axes.Max(i=>Math.Abs(current[i]-targets[k][i])))
+                .First();
+            double error=axes.Max(i=>Math.Abs(current[i]-targets[index][i]));
+            return (targets.Skip(index).Concat(targets.Take(index)).Select(q=>q.ToArray()).ToArray(),index,error);
+        }
+
         public static Plan Build(UrdfKinematics model, double[] start,
             IReadOnlyList<double[]> targets, IReadOnlyList<double> initialSeconds,
             double[] motorScale, bool repeat, double toleranceMm = 1.0,
@@ -79,6 +104,8 @@ namespace SmallProject.Devices.Arm.Kinematic
             var entryV=original.Select(_=>new double[6]).ToArray();
             var exitV=original.Select(_=>new double[6]).ToArray();
             var blendSeconds=new double[originalCount+1];
+            var seamVelocity=new double[6];
+            double seamInSeconds=0,seamOutSeconds=0;
             // Round only a short neighbourhood of each corner. A polynomial
             // spanning a whole long leg would need an almost zero corner
             // speed to meet a 1 mm tolerance.
@@ -122,8 +149,72 @@ namespace SmallProject.Devices.Arm.Kinematic
                 }
                 blendSeconds[i]=t;
             }
+
+            // A repeating path must also round the last-to-first corner.  Keep
+            // the exact recorded start as the wire closure point, and put one
+            // short blend on each side of it.  The first pass uses the same
+            // first block with a zero entry speed; later laps enter it with the
+            // velocity left by the final block, so there is no dwell at the
+            // loop seam.
+            if(repeat)
+            {
+                int last=originalCount;
+                var a=original[last].Zip(original[last-1],(x,y)=>x-y).ToArray();
+                var b=original[1].Zip(original[0],(x,y)=>x-y).ToArray();
+                double na=Math.Sqrt(a.Sum(v=>v*v)),nb=Math.Sqrt(b.Sum(v=>v*v));
+                if(na>=1e-9 && nb>=1e-9)
+                {
+                    double cosine=a.Zip(b,(x,y)=>x*y).Sum()/(na*nb);
+                    if(cosine>-.999999)
+                    {
+                        if(cosine>.999999)
+                        {
+                            double rate=Math.Min(na/originalTimes[^1],nb/originalTimes[0]);
+                            foreach(int j in axes) seamVelocity[j]=rate*a[j]/na;
+                            entryV[last]=seamVelocity.ToArray();
+                        }
+                        else
+                        {
+                            double wa=Enumerable.Range(0,6).Sum(j=>weights[j]*Math.Abs(a[j]));
+                            double wb=Enumerable.Range(0,6).Sum(j=>weights[j]*Math.Abs(b[j]));
+                            double fa=Math.Min(.2,toleranceMm*.80/Math.Max(1e-12,wa));
+                            double fb=Math.Min(.2,toleranceMm*.80/Math.Max(1e-12,wb));
+                            for(int j=0;j<6;++j) { entry[last][j]-=a[j]*fa; exit[0][j]+=b[j]*fb; }
+                            double[] tangent=a.Select((v,j)=>v/na+b[j]/nb).ToArray();
+                            double tangentNorm=Math.Sqrt(tangent.Sum(v=>v*v));
+                            double t=.05;
+                            for(int attempt=0;attempt<8;++attempt)
+                            {
+                                double seamRate=2*Math.Min(na*fa,nb*fb)/t;
+                                foreach(int j in axes)
+                                {
+                                    entryV[last][j]=2*a[j]*fa/t;
+                                    exitV[0][j]=2*b[j]*fb/t;
+                                    seamVelocity[j]=seamRate*tangent[j]/tangentNorm;
+                                }
+                                var incoming=Controls(entry[last],original[last],entryV[last],seamVelocity,t);
+                                var outgoing=Controls(original[0],exit[0],seamVelocity,exitV[0],t);
+                                double stretch=1;
+                                foreach(var controls in new[]{incoming,outgoing}) for(int axis=0;axis<axisCount;++axis)
+                                {
+                                    var c=controls.Select(v=>v[axes[axis]]*motorScale[axis]).ToArray();
+                                    var vb=Enumerable.Range(0,5).Select(k=>5*(c[k+1]-c[k])/t).ToArray();
+                                    var ab=Enumerable.Range(0,4).Select(k=>4*(vb[k+1]-vb[k])/t).ToArray();
+                                    var jb=Enumerable.Range(0,3).Select(k=>3*(ab[k+1]-ab[k])/t).ToArray();
+                                    stretch=Math.Max(stretch,Bound(vb,4)/(maxVelocity*.95));
+                                    stretch=Math.Max(stretch,Math.Sqrt(Bound(ab,4)/(maxAcceleration*.95)));
+                                    stretch=Math.Max(stretch,Math.Cbrt(Bound(jb,4)/(maxJerk*.95)));
+                                }
+                                if(stretch<=1) break;
+                                t=Math.Ceiling(t*stretch*1.01*1000)/1000;
+                            }
+                            seamInSeconds=seamOutSeconds=t;
+                        }
+                    }
+                }
+            }
             q=new List<double[]> { start.ToArray() };
-            var velocities=new List<double[]> { new double[6] };
+            var velocities=new List<double[]> { seamVelocity };
             var segmentTimes=new List<double>();
             var referenceA=new List<double[]>(); var referenceB=new List<double[]>();
             void Add(double[] end,double[] speed,double time,double[] a,double[] b)
@@ -131,6 +222,8 @@ namespace SmallProject.Devices.Arm.Kinematic
                 q.Add(end); velocities.Add(speed); segmentTimes.Add(Math.Max(.05,Math.Ceiling(time*1000)/1000));
                 referenceA.Add(a); referenceB.Add(b);
             }
+            if(seamOutSeconds>0)
+                Add(exit[0],exitV[0],seamOutSeconds,original[0],original[0]);
             for(int i=0;i<originalCount;++i)
             {
                 double length=Math.Sqrt(original[i+1].Zip(original[i],(x,y)=>(x-y)*(x-y)).Sum());
@@ -138,6 +231,8 @@ namespace SmallProject.Devices.Arm.Kinematic
                 Add(entry[i+1],entryV[i+1],originalTimes[i]*(length<1e-9?1:remaining/length),original[i],original[i+1]);
                 if(blendSeconds[i+1]>0) Add(exit[i+1],exitV[i+1],blendSeconds[i+1],original[i+1],original[i+1]);
             }
+            if(seamInSeconds>0)
+                Add(original[^1],seamVelocity,seamInSeconds,original[^1],original[^1]);
             int n=segmentTimes.Count;
             if(n>32) throw new ArgumentException("圆滑过渡后超过32段，请减少点位数量");
             var times=segmentTimes.ToArray(); var velocity=velocities.ToArray();

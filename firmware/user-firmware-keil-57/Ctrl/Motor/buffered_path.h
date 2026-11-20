@@ -95,17 +95,36 @@ public:
         if(leave) leave(key);
         return ok;
     }
+    bool RebaseFirstPassStart(int32_t p0, float vmax, float amax) {
+        if(state!=1 || count==0) return false;
+        float seconds=(float)first.ticks/20000.0f;
+        Block rebased{};
+        if(!Prepare(rebased,p0,first.p1,0,first.v1,seconds,vmax,amax))
+            return false;
+        first=rebased;
+        return true;
+    }
     bool Start(uint8_t expected, uint16_t id, bool repeat) {
         if(state!=1 || count==0 || expected!=count || id!=session) return Reject(3);
         if(blocks[count-1].p1!=blocks[0].p0 && repeat) return Reject(3);
         if(repeat && blocks[count-1].v1!=blocks[0].v0) return Reject(3);
         if(!repeat && blocks[count-1].v1!=0) return Reject(3);
         repeating=repeat; firstPass=true; index=0;
-        position=blocks[0].p0; velocity=0; phase=0;
+        position=first.p0; velocity=0; phase=0;
         waitTicks=400; remaining=0; heartbeat=0;
         ++generation; head=tail=0; producerIndex=0; producerPhase=0;
         producerFirst=true; producerDone=false;
         state=2;
+        return true;
+    }
+    bool FinishTogether(uint8_t expected, uint16_t id) {
+        if(id!=session || expected!=count || count==0 || repeating ||
+           (state!=2 && state!=3)) return false;
+        ++generation; head=tail=0; producerDone=true;
+        waitTicks=remaining=phase=0;
+        index=(uint8_t)(count-1U);
+        position=blocks[index].p1; velocity=0;
+        state=3;
         return true;
     }
     // Main-loop producer: software float never runs in the 20 kHz ISR.

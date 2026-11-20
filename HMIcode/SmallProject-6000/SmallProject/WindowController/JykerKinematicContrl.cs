@@ -4,6 +4,7 @@ using SmallProject.Logger;
 using System;
 using System.Globalization;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Controls;
 
@@ -14,6 +15,7 @@ namespace SmallProject.WindowController
         private readonly MainWindow window;
         private bool solving;
         private bool updatingJointInputs;
+        private int actualPositionRefreshPending;
         public JykerKinematicContrl(MainWindow window)
         {
             this.window = window;
@@ -21,6 +23,8 @@ namespace SmallProject.WindowController
             window.bt_IK.Click += async (_, _) => await CalculateInverseAsync();
             window.bt_GetCurrentAngle.Click += (_, _) => ShowCurrentPosition();
             ApplyModelJoints(JointCoordinateMap.ToModel(App.Core.Jyker.prepareJoints.a));
+            RefreshActualJointDisplay();
+            App.Core.Jyker.JointPositionChanged += OnJointPositionChanged;
             for (int i=0;i<6;i++)
             {
                 int axis=i;
@@ -29,6 +33,23 @@ namespace SmallProject.WindowController
                     if (!updatingJointInputs) MotionSelections[axis].IsChecked=true;
                 };
             }
+        }
+
+        private void OnJointPositionChanged(int _, double __)
+        {
+            if (Interlocked.Exchange(ref actualPositionRefreshPending,1) != 0) return;
+            window.Dispatcher.BeginInvoke(new Action(() =>
+            {
+                Interlocked.Exchange(ref actualPositionRefreshPending,0);
+                RefreshActualJointDisplay();
+            }));
+        }
+
+        private void RefreshActualJointDisplay()
+        {
+            double[] joints=App.Core.Jyker.GetCurrentModelJointsSnapshot();
+            for(int i=0;i<ActualJointDisplays.Length;i++)
+                ActualJointDisplays[i].Text=$"实际 {joints[i]:0.000}°";
         }
         public int[] SelectedMotionAxes => Enumerable.Range(0,6)
             .Where(i=>MotionSelections[i].IsChecked==true).ToArray();
@@ -119,6 +140,7 @@ namespace SmallProject.WindowController
         }
         public void ShowCurrentPosition() => ApplyModelJoints(JointCoordinateMap.ToModel(App.Core.Jyker.currentJoints.a));
         private TextBox[] JointInputs => new[] { window.tb_Joint1,window.tb_Joint2,window.tb_Joint3,window.tb_Joint4,window.tb_Joint5,window.tb_Joint6 };
+        private TextBlock[] ActualJointDisplays => new[] { window.tb_ActualJ1,window.tb_ActualJ2,window.tb_ActualJ3,window.tb_ActualJ4,window.tb_ActualJ5,window.tb_ActualJ6 };
         private CheckBox[] MotionSelections => new[] { window.cb_MoveJ1,window.cb_MoveJ2,window.cb_MoveJ3,window.cb_MoveJ4,window.cb_MoveJ5,window.cb_MoveJ6 };
         private TextBox[] PoseInputs => new[] { window.tb_X,window.tb_Y,window.tb_Z,window.tb_A,window.tb_B,window.tb_C };
         private static bool TryReadValues(TextBox[] inputs, string description, out double[] values)

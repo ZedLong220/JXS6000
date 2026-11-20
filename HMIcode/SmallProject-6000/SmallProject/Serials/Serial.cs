@@ -311,7 +311,8 @@ namespace SmallProject.Serials
                             string[] controllerErrors = {
                                 "无", "CAN轨迹下发失败", "驱动板编码器反馈超时",
                                 "驱动板未在规定时间内到位", "连续路径协议不匹配或装载确认超时",
-                                "驱动路径故障（详见故障轴与驱动原因）", "路径起点与编码器位置不一致"
+                                "驱动路径故障（详见故障轴与驱动原因）", "路径起点与编码器位置不一致",
+                                "固定路径启动时机械臂不在零位", "夹爪舵机指令执行失败"
                             };
                             int state = aFrame.Data[0];
                             int error = aFrame.Data[1];

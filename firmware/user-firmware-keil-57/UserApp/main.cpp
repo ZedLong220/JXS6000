@@ -51,13 +51,20 @@ void Main()
             .dce_ki = 300,
             .dce_kd = 300,
             .motor_temperature = 0.0,
-            .enableMotorOnBoot=false,
+            .enableMotorOnBoot=true,
             .enableStallProtect=false,
             .enableTempWatch=false,
         };
         eeprom.put(0, boardConfig);
     }
     boardConfig.enableTempWatch=false;
+    /* This robot must hold its joints as soon as a calibrated drive boots.
+       Apply the policy even to boards whose older EEPROM image saved
+       enableMotorOnBoot=false.  Position mode is selected deliberately: the
+       first encoder sample is captured as the hold target in Motor::Tick20kHz,
+       so power-up enables torque without commanding a return to stored home. */
+    boardConfig.enableMotorOnBoot=true;
+    boardConfig.defaultMode=Motor::MODE_COMMAND_POSITION;
     //depends on 3 bits switch now
     boardConfig.canNodeId = defaultNodeID;
     motor.config.motionParams.encoderHomeOffset = boardConfig.encoderHomeOffset;
@@ -105,6 +112,7 @@ void Main()
 
     for (;;)
     {
+        CAN_ProcessTxQueue();
         motor.motionPlanner.bufferedPath.Fill(EnterPathPublish,LeavePathPublish);
         PrepareSplineBlock();
 //        if ( encoderCalibrator.FlashRun() == 0)

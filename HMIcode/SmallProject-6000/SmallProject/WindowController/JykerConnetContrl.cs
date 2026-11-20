@@ -126,6 +126,7 @@ namespace SmallProject.WindowController
             {
                 M.bt_ApplyHomePosition.IsEnabled = State;
                 M.bt_StopNow.IsEnabled = State;
+                M.bt_EmergencyDisable.IsEnabled = State;
                 //M.bt_FK.IsEnabled = State;
                 //M.bt_IK.IsEnabled = State;
                 M.bt_MoveJoint.IsEnabled = State;
@@ -135,8 +136,17 @@ namespace SmallProject.WindowController
                 M.bt_MoveArmHand.IsEnabled = State;
                 M.bt_MoveLoop.IsEnabled = State;
                 M.bt_MoveFivePath.IsEnabled = State;
+                M.bt_FixedPickSequence.IsEnabled = State;
                 M.bt_MoveLoopStop.IsEnabled = false;
                 M.bt_DeleteRecord.IsEnabled = State;
+                M.bt_MoveArmHand.IsEnabled = State;
+                M.bt_ConnectAi.IsEnabled = State;
+                M.bt_ClawApply.IsEnabled = State;
+                M.bt_ClawHome.IsEnabled = State;
+                M.bt_ClawFull.IsEnabled = State;
+                M.bt_ClawStop.IsEnabled = State;
+                M.bt_ClawLoopStart.IsEnabled = State;
+                M.pg_ClawAngle.IsEnabled = State;
 
             });
         }

@@ -33,6 +33,7 @@ namespace SmallProject.Devices.Arm
         public Pose6D_t preparePose6D;
         private readonly object positionLock = new object();
         private readonly long[] positionVersions = new long[6];
+        public event Action<int,double>? JointPositionChanged;
 
         public JykerArm() {
             dof6Solver = new Dof6kinematic(App.JConfig);
@@ -90,14 +91,26 @@ namespace SmallProject.Devices.Arm
             var motor = motorJ[Id - 1];
             double directionAndReduction = motor.Direction * motor.Reduction;
             if (directionAndReduction == 0) return;
+            double modelAngle;
             lock (positionLock)
             {
                 // CAN 0x23 reports motor revolutions. Convert it to the model
                 // joint angle used by the UI and point records.
-                motor.Angle = value * 360.0 / directionAndReduction;
+                modelAngle = value * 360.0 / directionAndReduction;
+                motor.Angle = modelAngle;
                 motor.IsFinish = isFinish;
+                double[] joints = JointCoordinateMap.ToModel(currentJoints.a);
+                joints[Id - 1] = modelAngle;
+                currentJoints = new Joint6D_t(JointCoordinateMap.ToLegacy(joints));
                 positionVersions[Id - 1]++;
             }
+            JointPositionChanged?.Invoke(Id - 1,modelAngle);
+        }
+
+        public double[] GetCurrentModelJointsSnapshot()
+        {
+            lock (positionLock)
+                return JointCoordinateMap.ToModel(currentJoints.a).ToArray();
         }
 
         public Task<double[]?> ReadCurrentModelJointsAsync(int timeoutMilliseconds = 1500,
@@ -128,10 +141,7 @@ namespace SmallProject.Devices.Arm
                 {
                     if (axes.All(i=>positionVersions[i]>versions[i]))
                     {
-                        double[] joints = JointCoordinateMap.ToModel(currentJoints.a);
-                        foreach(int i in axes) joints[i]=motorJ[i].Angle;
-                        currentJoints=new Joint6D_t(JointCoordinateMap.ToLegacy(joints));
-                        return joints;
+                        return JointCoordinateMap.ToModel(currentJoints.a).ToArray();
                     }
                 }
                 await Task.Delay(20,cancellationToken);
@@ -177,7 +187,7 @@ namespace SmallProject.Devices.Arm
                 settings.ReductionJ3,settings.ReductionJ4,settings.ReductionJ5,settings.ReductionJ6}))
             { JLog.Info("减速比已变更，请重启上位机后再运动。"); return false; }
             if (!App.Core.Serial.IsOpen || legacyTargets.Count == 0 ||
-                legacyTargets.Count > MaximumContinuousPathPoints)
+                legacyTargets.Count + (repeat ? 1 : 0) > MaximumContinuousPathPoints)
                 return false;
             if (legacyTargets.Any(target => target.Length != 6 ||
                                             target.Any(value => !double.IsFinite(value))))
@@ -190,15 +200,21 @@ namespace SmallProject.Devices.Arm
                 JLog.Info($"路径启动失败：{axisNames}编码器新反馈不完整，请检查对应节点。"); return false;
             }
             long readMilliseconds=preparation.ElapsedMilliseconds;
+            var pathTargets=ContinuousPathPlanner.WithRepeatClosure(
+                legacyTargets,JointCoordinateMap.ToLegacy(start),repeat);
             var times = new List<double>();
             double[] previous = JointCoordinateMap.ToLegacy(start);
             var reductions=motorJ.Select(m=>(double)m.Reduction).ToArray();
-            foreach (var target in legacyTargets) { times.Add(MotionTiming.MinimumSeconds(previous,target,reductions,axes,settings)); previous=target; }
+            foreach (var target in pathTargets)
+            {
+                times.Add(MotionTiming.MinimumSeconds(previous,target,reductions,axes,settings));
+                previous=target;
+            }
             ContinuousPathPlanner.Plan plan;
             try
             {
                 plan = ContinuousPathPlanner.Build(dof6Solver.Model, start,
-                    legacyTargets.Select(JointCoordinateMap.ToModel).ToArray(), times,
+                    pathTargets.Select(JointCoordinateMap.ToModel).ToArray(), times,
                     axes.Select(i=>motorJ[i].Direction*motorJ[i].Reduction/360.0).ToArray(), repeat,
                     jointIndices:axes,toleranceMm:toleranceMm,maxVelocity:settings.MotorMaxVelocity,
                     maxAcceleration:settings.MotorMaxAcceleration,maxJerk:settings.MotorMaxJerk);
@@ -242,7 +258,13 @@ namespace SmallProject.Devices.Arm
         //设置立刻停止
         public void StopNow()
         {
-            var canFrame = SlcanParser.ParseSlcanFrameStr(0, 0x04);
+            var canFrame = SlcanParser.ParseSlcanQueryFrameStr(0, 0x09);
+            App.Core.Serial?.PushDataToQueue(canFrame);
+        }
+
+        public void EmergencyDisable()
+        {
+            var canFrame = SlcanParser.ParseSlcanQueryFrameStr(0, 0x59);
             App.Core.Serial?.PushDataToQueue(canFrame);
         }
         //生成逆解解算结果

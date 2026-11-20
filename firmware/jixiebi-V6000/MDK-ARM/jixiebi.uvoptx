@@ -103,7 +103,7 @@
         <bEvRecOn>1</bEvRecOn>
         <bSchkAxf>0</bSchkAxf>
         <bTchkAxf>0</bTchkAxf>
-        <nTsel>2</nTsel>
+        <nTsel>3</nTsel>
         <sDll></sDll>
         <sDllPa></sDllPa>
         <sDlgDll></sDlgDll>
@@ -587,8 +587,8 @@
       <tvExp>0</tvExp>
       <tvExpOptDlg>0</tvExpOptDlg>
       <bDave2>0</bDave2>
-      <PathWithFileName>..\USER\Src\kinematics.c</PathWithFileName>
-      <FilenameWithoutPath>kinematics.c</FilenameWithoutPath>
+      <PathWithFileName>..\USER\Src\host_bridge.c</PathWithFileName>
+      <FilenameWithoutPath>host_bridge.c</FilenameWithoutPath>
       <RteFlg>0</RteFlg>
       <bShared>0</bShared>
     </File>
@@ -623,8 +623,8 @@
       <tvExp>0</tvExp>
       <tvExpOptDlg>0</tvExpOptDlg>
       <bDave2>0</bDave2>
-      <PathWithFileName>..\USER\Src\serial_cmd.c</PathWithFileName>
-      <FilenameWithoutPath>serial_cmd.c</FilenameWithoutPath>
+      <PathWithFileName>..\USER\Src\gripper_servo.c</PathWithFileName>
+      <FilenameWithoutPath>gripper_servo.c</FilenameWithoutPath>
       <RteFlg>0</RteFlg>
       <bShared>0</bShared>
     </File>
@@ -635,20 +635,8 @@
       <tvExp>0</tvExp>
       <tvExpOptDlg>0</tvExpOptDlg>
       <bDave2>0</bDave2>
-      <PathWithFileName>..\USER\Src\bsp_w25q128.c</PathWithFileName>
-      <FilenameWithoutPath>bsp_w25q128.c</FilenameWithoutPath>
-      <RteFlg>0</RteFlg>
-      <bShared>0</bShared>
-    </File>
-    <File>
-      <GroupNumber>5</GroupNumber>
-      <FileNumber>34</FileNumber>
-      <FileType>1</FileType>
-      <tvExp>0</tvExp>
-      <tvExpOptDlg>0</tvExpOptDlg>
-      <bDave2>0</bDave2>
-      <PathWithFileName>..\USER\Src\it_patch.c</PathWithFileName>
-      <FilenameWithoutPath>it_patch.c</FilenameWithoutPath>
+      <PathWithFileName>..\USER\Src\serial_cmd.c</PathWithFileName>
+      <FilenameWithoutPath>serial_cmd.c</FilenameWithoutPath>
       <RteFlg>0</RteFlg>
       <bShared>0</bShared>
     </File>

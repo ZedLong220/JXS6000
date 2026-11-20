@@ -136,11 +136,13 @@ public:
 
         void Init();
         void SetCtrlMode(Mode_t _mode);
+        void HoldCurrentPosition();
         void SetCurrentSetPoint(int32_t _cur);
         void SetVelocitySetPoint(int32_t _vel);
         void SetPositionSetPoint(int32_t _pos);
         bool SetPositionSetPointWithTime(int32_t _pos, float _time);
         float GetPosition(bool _isLap = false);
+        int32_t GetEncoderPositionSteps() const;
         float GetVelocity();
         float GetFocCurrent();
         void AddTrajectorySetPoint(int32_t _pos, int32_t _vel);
@@ -153,7 +155,8 @@ public:
         bool FetchLimitReachedReport(uint8_t* _side, uint8_t* _fromCommand);
         uint8_t GetLimitInputState() const;
         uint8_t BufferedPathSafetyError() const;
-        uint8_t BufferedPathStartError(int32_t initialPosition) const;
+        uint8_t BufferedPathStartError(int32_t initialPosition,
+                                       int32_t toleranceSteps = 1024) const;
 
 
     private:
@@ -179,6 +182,7 @@ public:
         bool softDisable{};
         bool softBrake{};
         bool softNewCurve{};
+        bool preserveIntegralOnNewCurve{};
         int32_t focPosition{};
         uint32_t stalledTime{};
         uint32_t overloadTime{};

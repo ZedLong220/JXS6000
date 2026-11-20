@@ -28,6 +28,13 @@ static float SplineFloat(const uint8_t *p) {
 }
 static uint32_t EnterSplineCommit() { uint32_t key=__get_PRIMASK(); __disable_irq(); return key; }
 static void LeaveSplineCommit(uint32_t key) { __set_PRIMASK(key); }
+static int32_t SplineStartToleranceSteps() {
+    /* 0.5 joint degree expressed in motor encoder steps for the installed
+       J1..J6 reductions 50/100/100/30/30/1. */
+    static const int32_t tolerance[6]={3556,7111,7111,2133,2133,71};
+    return boardConfig.canNodeId>=1U && boardConfig.canNodeId<=6U ?
+        tolerance[boardConfig.canNodeId-1U] : 1024;
+}
 void PrepareSplineBlock() {
     uint32_t key=EnterSplineCommit();
     if(!pendingSplineValid) { LeaveSplineCommit(key); return; }
@@ -74,10 +81,7 @@ void SendOne() {
     TxHeader.DLC = 8;
     TxHeader.TransmitGlobalTime = DISABLE;
 
-    if (HAL_CAN_AddTxMessage(&hcan, &TxHeader, TxData, &TxMailbox) != HAL_OK)
-    {
-        Error_Handler();
-    }
+    (void) CAN_Send(&TxHeader, TxData);
     printf("send one \r\n");
 }
 
@@ -132,10 +136,12 @@ void OnCanCmd(uint8_t _cmd, uint8_t* _data, uint32_t _len)
     }
     if (_cmd==0x0DU) {
         if (_len!=2U) return;
-        motor.controller->SetCtrlMode(Motor::MODE_STOP);
+        uint32_t key=EnterSplineCommit();
         path.Clear((uint16_t)(_data[0]|((uint16_t)_data[1]<<8)));
         splineMask=0; queuedTrajectoryValid=false;
         pendingSplineValid=false;
+        motor.controller->HoldCurrentPosition();
+        LeaveSplineCommit(key);
         return;
     }
     if (_cmd==0x0AU || _cmd==0x0BU) {
@@ -164,14 +170,32 @@ void OnCanCmd(uint8_t _cmd, uint8_t* _data, uint32_t _len)
             !(_data[3] & (1U<<(boardConfig.canNodeId-1U)))) return;
         uint16_t id=(uint16_t)(_data[6]|((uint16_t)_data[7]<<8));
         if ((_data[3]&~0x3FU)!=0U) { path.Fail(BufferedPath::ErrorInvalidCurve); return; }
-        uint8_t startError=motor.controller->BufferedPathStartError(path.blocks[0].p0);
+        uint8_t startError=motor.controller->BufferedPathStartError(
+            path.blocks[0].p0,SplineStartToleranceSteps());
         if (startError!=BufferedPath::ErrorNone) {
             path.Fail(startError); return;
         }
+        /* The joint can settle slightly while the HMI plans and the master
+           uploads the blocks. Only the first pass is rebased; loop closure and
+           every later segment remain exactly as planned. */
+        uint32_t key=EnterSplineCommit();
+        bool rebased=path.RebaseFirstPassStart(motor.controller->GetEncoderPositionSteps(),
+            (float)boardConfig.velocityLimit,(float)boardConfig.velocityAcc);
+        LeaveSplineCommit(key);
+        if (!rebased) { path.Fail(BufferedPath::ErrorInvalidCurve); return; }
         if (path.Start(_data[4],id,_data[5]!=0U)) {
             queuedTrajectoryValid=false;
             motor.controller->SetCtrlMode(Motor::MODE_BUFFERED_PATH);
         }
+        return;
+    }
+    if (_cmd==0x67U && _len==8U && _data[0]==0xFFU && _data[1]==0x67U && _data[2]==4U) {
+        if (boardConfig.canNodeId<1U || boardConfig.canNodeId>6U ||
+            (_data[3]&~0x3FU)!=0U || !(_data[3] & (1U<<(boardConfig.canNodeId-1U)))) return;
+        uint16_t id=(uint16_t)(_data[6]|((uint16_t)_data[7]<<8));
+        uint32_t key=EnterSplineCommit();
+        path.FinishTogether(_data[4],id);
+        LeaveSplineCommit(key);
         return;
     }
     float tmpF;
@@ -191,6 +215,15 @@ void OnCanCmd(uint8_t _cmd, uint8_t* _data, uint32_t _len)
             motor.controller->SetVelocitySetPoint(0);
             motor.controller->SetCurrentSetPoint(0);
             motor.controller->modeRunning = Motor::MODE_STOP;
+            break;
+        case 0x0E:  // Controlled stop: cancel motion and hold encoder position
+        {
+            uint32_t key=EnterSplineCommit();
+            splineMask=0; queuedTrajectoryValid=false; pendingSplineValid=false;
+            path.Clear(path.session);
+            motor.controller->HoldCurrentPosition();
+            LeaveSplineCommit(key);
+        }
             break;
         case 0x02:  // Do Calibration
             encoderCalibrator.isTriggered = true;
@@ -369,6 +402,12 @@ void OnCanCmd(uint8_t _cmd, uint8_t* _data, uint32_t _len)
                 boardConfig.configStatus = CONFIG_COMMIT;
             break;
         case 0x15:  // Apply Home-Position and Store to EEPROM
+            /* Manual zeroing is accepted only while the drive is already
+               stationary and holding. Never rebase a moving trajectory. */
+            if (motor.controller->state != Motor::STATE_FINISH ||
+                motor.motionPlanner.bufferedPath.Active() ||
+                fabsf(motor.controller->GetVelocity()) > 0.02f)
+                break;
             motor.controller->ApplyPosAsHomeOffset();
             boardConfig.encoderHomeOffset = motor.config.motionParams.encoderHomeOffset %
                                             motor.MOTOR_ONE_CIRCLE_SUBDIVIDE_STEPS;

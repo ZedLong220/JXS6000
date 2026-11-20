@@ -22,6 +22,7 @@
 
 /* USER CODE BEGIN 0 */
 #include <stdio.h>
+#include <string.h>
 
 #include "common_inc.h"
 #include "configurations.h"
@@ -31,6 +32,60 @@ CAN_RxHeaderTypeDef RxHeader;
 uint8_t TxData[8];
 uint8_t RxData[8];
 uint32_t TxMailbox;
+volatile uint32_t canTxDropCount = 0;
+volatile uint32_t canTxDeferredCount = 0;
+volatile uint32_t canTxRetryCount = 0;
+volatile uint32_t canRxDropCount = 0;
+volatile uint32_t canErrorCount = 0;
+volatile uint32_t canLastError = HAL_CAN_ERROR_NONE;
+
+#define CAN_TX_QUEUE_SIZE 16U
+typedef struct
+{
+    CAN_TxHeaderTypeDef header;
+    uint8_t data[8];
+} PendingCanTx;
+
+static PendingCanTx canTxQueue[CAN_TX_QUEUE_SIZE];
+static volatile uint8_t canTxQueueHead = 0U;
+static volatile uint8_t canTxQueueTail = 0U;
+
+static uint32_t CAN_EnterQueueCritical(void)
+{
+    uint32_t key = __get_PRIMASK();
+    __disable_irq();
+    return key;
+}
+
+static void CAN_LeaveQueueCritical(uint32_t key)
+{
+    __set_PRIMASK(key);
+}
+
+static HAL_StatusTypeDef CAN_QueueTx(const CAN_TxHeaderTypeDef *header,
+                                    const uint8_t *data)
+{
+    uint32_t key;
+    uint8_t next;
+
+    if (header == NULL || data == NULL || header->DLC > 8U)
+        return HAL_ERROR;
+
+    key = CAN_EnterQueueCritical();
+    next = (uint8_t)((canTxQueueHead + 1U) % CAN_TX_QUEUE_SIZE);
+    if (next == canTxQueueTail)
+    {
+        CAN_LeaveQueueCritical(key);
+        ++canTxDropCount;
+        return HAL_BUSY;
+    }
+    canTxQueue[canTxQueueHead].header = *header;
+    memcpy(canTxQueue[canTxQueueHead].data, data, header->DLC);
+    canTxQueueHead = next;
+    ++canTxDeferredCount;
+    CAN_LeaveQueueCritical(key);
+    return HAL_OK;
+}
 
 /* USER CODE END 0 */
 
@@ -56,7 +111,7 @@ void MX_CAN_Init(void)
   hcan.Init.TimeTriggeredMode = DISABLE;
   hcan.Init.AutoBusOff = ENABLE;
   hcan.Init.AutoWakeUp = DISABLE;
-  hcan.Init.AutoRetransmission = DISABLE;
+  hcan.Init.AutoRetransmission = ENABLE;
   hcan.Init.ReceiveFifoLocked = DISABLE;
   hcan.Init.TransmitFifoPriority = DISABLE;
   if (HAL_CAN_Init(&hcan) != HAL_OK)
@@ -222,22 +277,58 @@ void HAL_CAN_MspDeInit(CAN_HandleTypeDef* canHandle)
 }
 
 /* USER CODE BEGIN 1 */
-void CAN_Send(CAN_TxHeaderTypeDef* pHeader, uint8_t* data)
+HAL_StatusTypeDef CAN_Send(CAN_TxHeaderTypeDef* pHeader, uint8_t* data)
 {
-    if (HAL_CAN_AddTxMessage(&hcan, pHeader, data, &TxMailbox) != HAL_OK)
+    HAL_StatusTypeDef status;
+    uint32_t key;
+    uint8_t queueEmpty;
+
+    if (pHeader == NULL || data == NULL || pHeader->DLC > 8U)
+        return HAL_ERROR;
+
+    key = CAN_EnterQueueCritical();
+    queueEmpty = canTxQueueHead == canTxQueueTail ? 1U : 0U;
+    CAN_LeaveQueueCritical(key);
+
+    if (queueEmpty && HAL_CAN_GetTxMailboxesFreeLevel(&hcan) != 0U)
     {
-        Error_Handler();
+        status = HAL_CAN_AddTxMessage(&hcan, pHeader, data, &TxMailbox);
+        if (status == HAL_OK)
+            return HAL_OK;
+    }
+
+    /* CAN replies are often produced from the RX interrupt. Never block the
+       motor loop there, but retain the complete frame for main-loop retry. */
+    return CAN_QueueTx(pHeader, data);
+}
+
+void CAN_ProcessTxQueue(void)
+{
+    PendingCanTx pending;
+    uint32_t key;
+    uint32_t mailbox;
+
+    while (HAL_CAN_GetTxMailboxesFreeLevel(&hcan) != 0U)
+    {
+        key = CAN_EnterQueueCritical();
+        if (canTxQueueTail == canTxQueueHead)
+        {
+            CAN_LeaveQueueCritical(key);
+            return;
+        }
+        pending = canTxQueue[canTxQueueTail];
+        CAN_LeaveQueueCritical(key);
+
+        if (HAL_CAN_AddTxMessage(&hcan, &pending.header,
+                                pending.data, &mailbox) != HAL_OK)
+            return;
+
+        key = CAN_EnterQueueCritical();
+        canTxQueueTail = (uint8_t)((canTxQueueTail + 1U) % CAN_TX_QUEUE_SIZE);
+        ++canTxRetryCount;
+        CAN_LeaveQueueCritical(key);
     }
 }
-//void CAN_Send(CAN_TxHeaderTypeDef* pHeader, uint8_t* data)
-//{
-//    uint32_t timeout = 1000;
-//    while (HAL_CAN_GetTxMailboxesFreeLevel(&hcan) == 0 && timeout-- > 0);
-//    if (HAL_CAN_AddTxMessage(&hcan, pHeader, data, &TxMailbox) != HAL_OK)
-//    {
-//        return;
-//    }
-//}
 
 //void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef* CanHandle)
 //{
@@ -262,8 +353,8 @@ void CAN_Send(CAN_TxHeaderTypeDef* pHeader, uint8_t* data)
      /* Get RX message */
      if (HAL_CAN_GetRxMessage(CanHandle, CAN_RX_FIFO0, &RxHeader, RxData) != HAL_OK)
      {
-         /* Reception Error */
-         Error_Handler();
+         ++canRxDropCount;
+         return;
      }
 
      uint8_t id = (RxHeader.StdId >> 7); // 4Bits ID & 7Bits Msg
@@ -275,24 +366,14 @@ void CAN_Send(CAN_TxHeaderTypeDef* pHeader, uint8_t* data)
      }
  }
 
-//void HAL_CAN_ErrorCallback(CAN_HandleTypeDef *hcan)
-//{
-//    uint32_t err = hcan->ErrorCode;
-//    printf("CAN Error Callback! Code: %04lX, ESR: 0x%08lX\r\n", err, hcan->Instance->ESR);
-//
-//    if (err & HAL_CAN_ERROR_BOF) {
-//        printf("Bus-Off detected, attempting recovery...\r\n");
-//        HAL_CAN_Stop(hcan);
-//        HAL_Delay(100);
-//        HAL_CAN_Start(hcan);
-//        HAL_CAN_ResetError(hcan);
-//        HAL_CAN_ActivateNotification(hcan, CAN_IT_RX_FIFO0_MSG_PENDING | CAN_IT_ERROR);
-//    } else if (err & HAL_CAN_ERROR_EPV) {
-//        printf("Error Passive detected.\r\n");
-//    } else if (err & HAL_CAN_ERROR_EWG) {
-//        printf("Error Warning detected.\r\n");
-//    }
-//}
+void HAL_CAN_ErrorCallback(CAN_HandleTypeDef *CanHandle)
+{
+    /* AutoBusOff and AutoRetransmission let bxCAN recover in hardware. Never
+       stop/restart CAN or delay from this interrupt callback: the position
+       controller must keep running while the bus is recovering. */
+    canLastError = HAL_CAN_GetError(CanHandle);
+    ++canErrorCount;
+}
 /* USER CODE END 1 */
 
 /************************ (C) COPYRIGHT STMicroelectronics *****END OF FILE****/

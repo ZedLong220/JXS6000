@@ -46,13 +46,21 @@ static void pump(void)
             }
             if(cmd==0x23 && f.len==0 && node!=silentNode)
                 position((uint8_t)node,d.path.position/51200.0f+encoderBias[node-1],d.path.state==3);
-            if(cmd==9) d.path.Clear(d.path.session);
+            if(cmd==9 || cmd==0x0E) d.path.Clear(d.path.session);
         }
         if(node==0 && cmd==0x66 && f.len==8) {
             CHECK(f.data[2]==4);
             for(unsigned i=0;i<6;++i)if(f.data[3]&(1U<<i)) {
                 CHECK(drives[i].path.Start(f.data[4],(uint16_t)(f.data[6]|((uint16_t)f.data[7]<<8)),f.data[5]!=0));
                 drives[i].elapsed=drives[i].finishedAt=0;
+            }
+        }
+        if(node==0 && cmd==0x67 && f.len==8) {
+            CHECK(f.data[2]==4);
+            for(unsigned i=0;i<6;++i)if(f.data[3]&(1U<<i)) {
+                CHECK(drives[i].path.FinishTogether(f.data[4],
+                    (uint16_t)(f.data[6]|((uint16_t)f.data[7]<<8))));
+                drives[i].finishedAt=drives[i].elapsed;
             }
         }
     }
@@ -89,10 +97,10 @@ static void load_path(const std::vector<Frame> &host,bool repeat=false)
     CHECK(CAN_DualAxisGetState()==DUAL_AXIS_RUNNING);
     CHECK(last(0x66)->data[3]==63);
 }
-static void all_stopped(void)
+static void all_commanded(uint8_t command)
 {
     for(unsigned i=0;i<6;++i) {
-        CHECK(occurrences((uint16_t)(((i+1)<<7)|9))>0);
+        CHECK(occurrences((uint16_t)(((i+1)<<7)|command))>0);
         CHECK(!drives[i].path.Active());
     }
 }
@@ -118,22 +126,22 @@ int main(int argc,char **argv)
         CHECK(occurrences((uint16_t)(((i+1)<<7)|0x0C))==commits[i]);
         CHECK(drives[i].path.position==0);
     }
-    CHECK(occurrences(0x66)==1);
+    CHECK(occurrences(0x66)==1 && occurrences(0x67)==1);
     for(unsigned i=0;i<count;++i)CHECK((sent[i].id>>7)!=7);
     unsigned finishTick=drives[0].finishedAt;
     load_path(host,true); advance(finishTick/20*2+100);
-    CHECK(CAN_DualAxisGetState()==DUAL_AXIS_RUNNING && occurrences(0x66)==1);
+    CHECK(CAN_DualAxisGetState()==DUAL_AXIS_RUNNING && occurrences(0x66)==1 && occurrences(0x67)==0);
     for(unsigned i=0;i<6;++i) {
         CHECK(drives[i].path.Active() && drives[i].elapsed==drives[0].elapsed);
         CHECK(drives[i].path.index==drives[0].path.index);
     }
-    control(9,nullptr,0);pump();all_stopped();
+    control(9,nullptr,0);pump();all_commanded(0x0E);
     load_path(host); advance(100); drives[2].path.Fail(BufferedPath::ErrorLimitActive);advance(50);
     CHECK(CAN_DualAxisGetState()==DUAL_AXIS_FAULT && last(0x38)->data[1]==5);
-    CHECK(last(0x38)->data[4]==3 && last(0x38)->data[5]==BufferedPath::ErrorLimitActive);all_stopped();
+    CHECK(last(0x38)->data[4]==3 && last(0x38)->data[5]==BufferedPath::ErrorLimitActive);all_commanded(0x0E);
     load_path(host); advance(100);silentNode=6;advance(800);
-    CHECK(CAN_DualAxisGetState()==DUAL_AXIS_FAULT && last(0x38)->data[1]==2);all_stopped();
+    CHECK(CAN_DualAxisGetState()==DUAL_AXIS_FAULT && last(0x38)->data[1]==2);all_commanded(0x0E);
     load_path(host); advance(100);encoderBias[3]=.1f;advance(finishTick/20+5100);
-    CHECK(CAN_DualAxisGetState()==DUAL_AXIS_FAULT && last(0x38)->data[1]==3);all_stopped();
+    CHECK(CAN_DualAxisGetState()==DUAL_AXIS_FAULT && last(0x38)->data[1]==3);all_commanded(0x0E);
     std::cout<<"SIX AXIS HMI -> MASTER -> DRIVES PASSED: "<<checks<<"; common finish tick="<<finishTick<<"; repeat/fault/offline/final encoder checks passed\n";
 }

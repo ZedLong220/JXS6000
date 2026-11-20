@@ -80,6 +80,16 @@ static int process_control(uint8_t cmd, const uint8_t *data, uint8_t length)
         Gripper_GetStatus(status);
         return CAN_SendHostFrame(0x57U,status,8U)==0;
     }
+    if (cmd == CAN_CMD_FIXED_PICK_SEQUENCE) {
+        if (length != 0U) return 0;
+        SerialCmd_ResetPending();
+        return CAN_FixedPickSequenceStart() == 0;
+    }
+    if (cmd == CAN_CMD_EMERGENCY_DISABLE) {
+        if (length != 0U) return 0;
+        CAN_DualAxisEmergencyDisable();
+        return 1;
+    }
     if (cmd>=0x50U && cmd<=0x54U) {
         float value; uint16_t sequence;
         static const uint8_t lengths[5]={2U,5U,6U,8U,2U};
@@ -125,8 +135,7 @@ static int process_control(uint8_t cmd, const uint8_t *data, uint8_t length)
     }
     if (cmd == CAN_CMD_SET_HOME) {
         SerialCmd_ResetPending();
-        CAN_DualAxisSetZero();
-        return CAN_DualAxisGetState() != DUAL_AXIS_FAULT;
+        return CAN_DualAxisSetZero() == 0;
     }
     if (cmd == CAN_CMD_TRAJECTORY_CONTROL) {
         if (length != 1U || data[0] > 2U) return 0;
@@ -179,6 +188,8 @@ static int is_control(uint8_t cmd)
 {
     return cmd == CAN_CMD_STOP || cmd == 0x04U || cmd == CAN_CMD_SET_HOME ||
            (cmd>=0x50U && cmd<=0x57U) ||
+           cmd == CAN_CMD_FIXED_PICK_SEQUENCE ||
+           cmd == CAN_CMD_EMERGENCY_DISABLE ||
            cmd == CAN_CMD_TRAJECTORY_CONTROL || cmd == CAN_CMD_TRAJECTORY_SYNC ||
            cmd==0x68U || cmd==0x64U ||
            (cmd >= CAN_CMD_HOST_J2_POSITION_TIME && cmd <= CAN_CMD_HOST_J3_TRAJECTORY_POINT);
@@ -268,7 +279,7 @@ static void handle_text(const char *line)
         CAN_DualAxisStop();
     } else if (strcmp(line, "zero") == 0) {
         SerialCmd_ResetPending();
-        CAN_DualAxisSetZero();
+        (void)CAN_DualAxisSetZero();
     } else if (strcmp(line, "status") == 0 || strcmp(line, "p") == 0) {
         CAN_DualAxisPrintStatus();
     } else if (strncmp(line, "move:", 5U) == 0) {
