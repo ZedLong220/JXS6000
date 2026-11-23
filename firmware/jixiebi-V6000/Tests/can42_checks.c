@@ -2,6 +2,7 @@
 #include "serial_cmd.h"
 #include "host_bridge.h"
 #include "gripper_servo.h"
+#include "fixed_pick_arc.h"
 #include <assert.h>
 #include <math.h>
 #include <stdio.h>
@@ -438,7 +439,7 @@ static void fixed_finish(const float target[6])
 static void fixed_return_feedback(const float start[6],uint32_t elapsed)
 {
     for(uint8_t node=1;node<=5;++node)
-        position(node,start[node-1]*(1.0f-(float)elapsed/10000.0f),elapsed>=10000U);
+        position(node,start[node-1]*(1.0f-(float)elapsed/6560.0f),elapsed>=6560U);
     CAN_DualAxisUpdate();
 }
 
@@ -472,11 +473,10 @@ static void staggered_position_queries(void)
 static void fixed_pick_sequence(void)
 {
     static const float home[6]={0};
-    static const float nearFirst[6]={-2.083333f,-19.444444f,-66.666667f,-7.5f,7.5f,0.0f};
-    static const float first[6]={-2.083333f,-19.444444f,-83.333333f,-7.5f,7.5f,0.0f};
-    static const float second[6]={-6.944444f,-19.444444f,-83.333333f,-7.5f,7.5f,0.0f};
+    static const float nearFirst[6]={-2.083333f,-20.833333f,-66.666667f,-5.416667f,7.5f,0.0f};
+    static const float first[6]={-2.083333f,-20.833333f,-83.333333f,-5.416667f,7.5f,0.0f};
+    static const float second[6]={-11.885184f,-19.444444f,-83.333333f,-5.833333f,7.5f,0.0f};
     unsigned beforeThreshold[5], beforeSecond[5];
-    float target;
     reset();
     control(0x58,NULL,0);
     CHECK(last(0x3B)->data[6]==1 && CAN_DualAxisIsActive());
@@ -486,6 +486,11 @@ static void fixed_pick_sequence(void)
     fixed_feedback(home);
     CAN_DualAxisUpdate();
     fixed_check_target(first);
+    for(uint8_t node=1;node<=5;++node) {
+        float duration;
+        memcpy(&duration,last((uint16_t)((node<<7)|0x08))->data+4,4);
+        CHECK(fabsf(duration-6.56f)<0.000001f);
+    }
     for(uint8_t node=1;node<=5;++node)
         beforeThreshold[node-1]=occurrences((uint16_t)((node<<7)|0x08));
     fixed_finish(nearFirst);
@@ -505,17 +510,35 @@ static void fixed_pick_sequence(void)
     CHECK(occurrences(0x57)==firstCloseStatus); /* close once, keep the wait deadline */
     now+=1; CAN_DualAxisUpdate();
     CHECK(CAN_DualAxisGetState()==DUAL_AXIS_STARTING);
-    CHECK(last(0x38)->data[6]==0x01U);
+    CHECK(last(0x38)->data[6]==0x1FU);
     for(uint8_t node=1;node<=5;++node)
         beforeSecond[node-1]=occurrences((uint16_t)((node<<7)|0x08));
     fixed_feedback(first);
+    uint16_t session=reset_session();
+    for(uint8_t loaded=0;loaded<=FIXED_ARC_SEGMENT_COUNT;++loaded) {
+        for(uint8_t node=1;node<=5;++node)spline_status(node,loaded?1U:0U,loaded,session,0U);
+        fixed_feedback(first);
+    }
     CHECK(CAN_DualAxisGetState()==DUAL_AXIS_RUNNING);
-    CHECK(occurrences((uint16_t)((1U<<7)|0x08))==beforeSecond[0]+1U);
-    for(uint8_t node=2;node<=5;++node)
+    CHECK(last(0x66)->len==8 && last(0x66)->data[3]==0x1FU && last(0x66)->data[4]==FIXED_ARC_SEGMENT_COUNT);
+    for(uint8_t node=1;node<=5;++node) {
         CHECK(occurrences((uint16_t)((node<<7)|0x08))==beforeSecond[node-1]);
-    memcpy(&target,last((uint16_t)((1U<<7)|0x08))->data,4);
-    CHECK(fabsf(target-second[0])<0.00001f);
-    fixed_finish(second);
+        CHECK(occurrences((uint16_t)((node<<7)|0x0C))==FIXED_ARC_SEGMENT_COUNT);
+        float target;
+        memcpy(&target,last((uint16_t)((node<<7)|0x0A))->data+4,4);
+        CHECK(fabsf(target-second[node-1])<0.00001f);
+    }
+    CHECK(last((uint16_t)((6U<<7)|0x0D))==NULL);
+    for(unsigned elapsed=100;elapsed<(unsigned)(FIXED_ARC_DURATION_SEC*1000);elapsed+=100U) {
+        now+=100;
+        for(uint8_t node=1;node<=5;++node)spline_status(node,2U,FIXED_ARC_SEGMENT_COUNT,session,0U);
+        fixed_feedback(first);
+        CHECK(CAN_DualAxisGetState()==DUAL_AXIS_RUNNING && CAN_DualAxisIsActive());
+        CHECK(occurrences((uint16_t)((2U<<7)|0x0C))==FIXED_ARC_SEGMENT_COUNT);
+    }
+    now+=150;
+    for(uint8_t node=1;node<=5;++node)spline_status(node,3U,FIXED_ARC_SEGMENT_COUNT,session,0U);
+    fixed_feedback(second);
     CHECK(CAN_DualAxisGetState()==DUAL_AXIS_VERIFY_POSITION && servoPulse==1500U);
     CHECK(last(0x38)->data[6]==0x1FU);
     now+=999; fixed_feedback(second);
@@ -526,23 +549,24 @@ static void fixed_pick_sequence(void)
     for(uint8_t node=1;node<=5;++node) {
         float duration;
         memcpy(&duration,last((uint16_t)((node<<7)|0x08))->data+4,4);
-        CHECK(duration==10.0f);
+        CHECK(fabsf(duration-6.56f)<0.000001f);
     }
     unsigned beforeReturnClose=occurrences(0x57);
-    for(uint32_t elapsed=100;elapsed<5000U;elapsed+=100U) {
+    for(uint32_t elapsed=100;elapsed<3280U;elapsed+=100U) {
         now+=100;
         fixed_return_feedback(second,elapsed);
         CHECK(CAN_DualAxisGetState()==DUAL_AXIS_RUNNING && servoPulse==1500U);
     }
-    now+=99; fixed_return_feedback(second,4999U);
+    now+=79; fixed_return_feedback(second,3279U);
     CHECK(servoPulse==1500U && occurrences(0x57)==beforeReturnClose);
-    now+=1; fixed_return_feedback(second,5000U);
+    now+=1; fixed_return_feedback(second,3280U);
     CHECK(CAN_DualAxisGetState()==DUAL_AXIS_RUNNING && servoPulse==500U);
     CHECK(occurrences(0x57)==beforeReturnClose+1U);
-    for(uint32_t elapsed=5100;elapsed<=10000U;elapsed+=100U) {
+    for(uint32_t elapsed=3380;elapsed<6560U;elapsed+=100U) {
         now+=100;
         fixed_return_feedback(second,elapsed);
     }
+    now+=80; fixed_return_feedback(second,6560U);
     CHECK(CAN_DualAxisGetState()==DUAL_AXIS_IDLE && !CAN_DualAxisIsActive());
     CHECK(servoPulse==500U && last(0x57)!=NULL && last(0x57)->data[6]==1U);
     CHECK(occurrences(0x57)==beforeReturnClose+1U);

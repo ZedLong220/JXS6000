@@ -2,6 +2,7 @@
 #include "host_bridge.h"
 #include "serial_cmd.h"
 #include "gripper_servo.h"
+#include "fixed_pick_arc.h"
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
@@ -24,14 +25,12 @@
 #define MAX_TARGET_REV 40000.0f
 #define RX_QUEUE_SIZE 128U
 #define FIXED_AXIS_MASK 0x1FU
-#define FIXED_J1_MASK 0x01U
 #define FIXED_HOME_TOLERANCE_REV 0.02f
-#define FIXED_FIRST_DURATION_SEC 10.0f
-#define FIXED_J1_TO_MINUS_50_DURATION_SEC 2.0f
-#define FIXED_RETURN_HOME_DURATION_SEC 10.0f
-static uint8_t fixedReturnGripperClosed;
+/* 83.333 motor rev at 15 rev/s and 15 rev/s^2 needs about 6.556 s. */
+#define FIXED_FIRST_DURATION_SEC 6.56f
+#define FIXED_RETURN_HOME_DURATION_SEC 6.56f
 #define FIXED_RETURN_GRIPPER_CLOSE_DELAY_MS \
-    ((uint32_t)(FIXED_RETURN_HOME_DURATION_SEC * 500.0f))
+    ((uint32_t)(FIXED_RETURN_HOME_DURATION_SEC * 500.0f + 0.5f))
 #define FIXED_SERVO_WAIT_MS 1000U
 #define FIXED_J3_GRIPPER_OPEN_THRESHOLD_REV (-66.666667f) /* J3 -240 deg. */
 
@@ -98,7 +97,7 @@ typedef enum {
     FIXED_SEQUENCE_WAIT_HOME,
     FIXED_SEQUENCE_MOVE_FIRST,
     FIXED_SEQUENCE_WAIT_SERVO_0,
-    FIXED_SEQUENCE_MOVE_J1_TO_MINUS_50,
+    FIXED_SEQUENCE_MOVE_ARC,
     FIXED_SEQUENCE_WAIT_SERVO_90_FINAL,
     FIXED_SEQUENCE_MOVE_HOME
 } FixedSequenceState;
@@ -106,6 +105,7 @@ typedef enum {
 static FixedSequenceState fixedSequence;
 static uint32_t fixedServoSince;
 static uint8_t fixedGripperOpened;
+static uint8_t fixedReturnGripperClosed;
 
 static int send_frame(uint16_t id, const uint8_t *data, uint8_t length)
 {
@@ -334,6 +334,32 @@ static int set_gripper_angle(float angle)
     return 0;
 }
 
+static void begin_fixed_arc(void)
+{
+    /* Use the same fully acknowledged, preloaded driver executor as host
+       curves. All blocks run locally after one synchronized start; no
+       per-knot CAN dispatch or position-arrival wait is permitted. */
+    requiredMask = FIXED_AXIS_MASK;
+    for (uint8_t i = 0U; i < CAN_AXIS_COUNT; ++i)
+        splineStart[i] = activePoint.target[i];
+    for (uint8_t k = 0U; k < FIXED_ARC_SEGMENT_COUNT; ++k) {
+        memset(&path[k], 0, sizeof(path[k]));
+        path[k].duration = fixedArcPoints[k].duration;
+        for (uint8_t i = 0U; i < 4U; ++i) {
+            path[k].target[i] = fixedArcPoints[k].target[i];
+            path[k].velocity[i] = fixedArcPoints[k].velocity[i];
+        }
+        path[k].target[4] = 7.5f; /* J5 stays at -90 degrees. */
+    }
+    pathCount = FIXED_ARC_SEGMENT_COUNT;
+    pathIndex = pathRepeat = oneShot = uploadStage = finishBroadcast = 0U;
+    splineEnabled = pathPlaying = 1U;
+    movingMask = requiredMask;
+    readySince = HAL_GetTick();
+    fixedSequence = FIXED_SEQUENCE_MOVE_ARC;
+    set_state(DUAL_AXIS_STARTING, 0U);
+}
+
 static void fixed_sequence_update(uint32_t now)
 {
     TrajectoryPoint point;
@@ -351,9 +377,9 @@ static void fixed_sequence_update(uint32_t now)
         }
         memset(&point, 0, sizeof(point));
         point.target[0] = -2.083333f;  /* J1 -15 deg, ratio 50. */
-        point.target[1] = -19.444444f; /* J2 +70 deg, ratio 100, reversed. */
+        point.target[1] = -20.833333f; /* J2 +75 deg, ratio 100, reversed. */
         point.target[2] = -83.333333f; /* J3 -300 deg, ratio 100. */
-        point.target[3] = -7.500000f;  /* J4 +90 deg, ratio 30, reversed. */
+        point.target[3] = -5.416667f;  /* J4 +65 deg, ratio 30, reversed. */
         point.target[4] = 7.500000f;   /* J5 -90 deg, ratio 30, reversed. */
         point.duration = FIXED_FIRST_DURATION_SEC;
         fixedSequence = FIXED_SEQUENCE_MOVE_FIRST;
@@ -363,16 +389,7 @@ static void fixed_sequence_update(uint32_t now)
     }
     if (fixedSequence == FIXED_SEQUENCE_WAIT_SERVO_0 &&
         now - fixedServoSince >= FIXED_SERVO_WAIT_MS) {
-        memset(&point, 0, sizeof(point));
-        point.target[0] = -6.944444f; /* J1 -50 deg, ratio 50. */
-        point.duration = FIXED_J1_TO_MINUS_50_DURATION_SEC;
-
-        /* J2-J5 already hold the requested pose. Do not restart them with
-           near-zero moves, which can round their planned speed down to zero. */
-        requiredMask = FIXED_J1_MASK;
-        fixedSequence = FIXED_SEQUENCE_MOVE_J1_TO_MINUS_50;
-        oneShot = 1U;
-        begin_fixed_point(&point);
+        begin_fixed_arc();
         return;
     }
     if (fixedSequence == FIXED_SEQUENCE_WAIT_SERVO_90_FINAL &&
@@ -544,6 +561,16 @@ static void update_spline(uint32_t now)
     for (uint8_t i=0U;i<CAN_AXIS_COUNT;++i) if ((requiredMask&(1U<<i)) && splineFeedback[i].state!=3U) ended=0U;
     if (ended && target_reached()) {
         pathPlaying=movingMask=0U;
+        if (fixedSequence == FIXED_SEQUENCE_MOVE_ARC) {
+            if (set_gripper_angle(90.0f) != 0) { fault(8U); return; }
+            splineEnabled = 0U;
+            fixedSequence = FIXED_SEQUENCE_WAIT_SERVO_90_FINAL;
+            fixedServoSince = now;
+            /* The fixed sequence is still active. An intermediate IDLE would
+               make the HMI treat the entire operation as complete. */
+            set_state(DUAL_AXIS_VERIFY_POSITION, 0U);
+            return;
+        }
         set_state(DUAL_AXIS_IDLE,0U);
     } else if (!pathRepeat && now-segmentStart>=segmentDuration+VERIFY_TIMEOUT_MS) fault(3U);
     else if (!pathRepeat && now-segmentStart>=segmentDuration && state!=DUAL_AXIS_VERIFY_POSITION)
@@ -897,15 +924,6 @@ void CAN_DualAxisUpdate(void)
             if (set_gripper_angle(0.0f) != 0) { fault(8U); return; }
             oneShot = movingMask = 0U;
             fixedSequence = FIXED_SEQUENCE_WAIT_SERVO_0;
-            fixedServoSince = now;
-            set_state(DUAL_AXIS_VERIFY_POSITION, 0U);
-            return;
-        }
-        if (fixedSequence == FIXED_SEQUENCE_MOVE_J1_TO_MINUS_50) {
-            if (set_gripper_angle(90.0f) != 0) { fault(8U); return; }
-            oneShot = movingMask = 0U;
-            requiredMask = FIXED_AXIS_MASK;
-            fixedSequence = FIXED_SEQUENCE_WAIT_SERVO_90_FINAL;
             fixedServoSince = now;
             set_state(DUAL_AXIS_VERIFY_POSITION, 0U);
             return;

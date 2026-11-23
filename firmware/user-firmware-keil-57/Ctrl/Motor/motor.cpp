@@ -1028,35 +1028,19 @@ void Motor::Controller::SetPositionSetPoint(int32_t _pos)
 
 bool Motor::Controller::SetPositionSetPointWithTime(int32_t _pos, float _time)
 {
-    /*
-     * 根据目标位移和指定时间反算本次运动允许的最高速度。
-     * 位移过大、无法在指定时间内完成时，恢复默认额定速度并仍然接受目标。
-     */
-    int32_t deltaPos = abs(_pos - realPosition + context->config.motionParams.encoderHomeOffset);
-
-    /* 对称加减速条件下，给定时间内可完成的最大位移。 */
-    float pMax = (float) context->config.motionParams.ratedVelocityAcc * _time * _time / 4;
-    if ((float) deltaPos > pMax)
-    {
-        /* 时间不足：不强行计算 sqrt，使用驱动板保存的速度限制。 */
-        context->config.motionParams.ratedVelocity = boardConfig.velocityLimit;
-        SetPositionSetPoint(_pos);
-
-        return false;
-    } else
-    {
-        /* 时间足够：根据梯形/S 型规划所需的加速度求本次速度上限。 */
-        float vMax = _time * (float) context->config.motionParams.ratedVelocityAcc;
-        vMax -= (float) context->config.motionParams.ratedVelocityAcc *
-                (sqrtf(_time * _time - 4 * (float) deltaPos /
-                                       (float) context->config.motionParams.ratedVelocityAcc));
-        vMax /= 2;
-
-        context->config.motionParams.ratedVelocity = (int32_t) vMax;
-        SetPositionSetPoint(_pos);
-
-        return true;
-    }
+    /* Recalculate each move from its saved acceleration, but never replace the
+       saved speed ceiling with a higher time-derived value. If time is too
+       short, complete at the saved limit and let the master verify arrival. */
+    const int64_t delta = (int64_t)_pos + context->config.motionParams.encoderHomeOffset
+                          - realPosition;
+    const uint64_t distance = delta < 0 ? (uint64_t)(-delta) : (uint64_t)delta;
+    int32_t velocityLimit;
+    const bool fits = MotionPlanner::TimedPositionVelocityLimit(
+        distance, _time, context->config.motionParams.ratedVelocityAcc,
+        boardConfig.velocityLimit, velocityLimit);
+    context->config.motionParams.ratedVelocity = velocityLimit;
+    SetPositionSetPoint(_pos);
+    return fits;
 }
 
 

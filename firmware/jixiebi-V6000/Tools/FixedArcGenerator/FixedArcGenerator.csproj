@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../../../HMIcode/SmallProject-6000/SmallProject/Devices/Arm/Kinematic/UrdfKinematics.cs" Link="UrdfKinematics.cs" />
+    <Compile Include="../../../../HMIcode/SmallProject-6000/SmallProject/Devices/Arm/Kinematic/MotorCoordinateMap.cs" Link="MotorCoordinateMap.cs" />
+    <Compile Include="../../../../HMIcode/SmallProject-6000/SmallProject/Devices/Arm/Kinematic/Models/Pose6D_t.cs" Link="Pose6D_t.cs" />
+  </ItemGroup>
+</Project>

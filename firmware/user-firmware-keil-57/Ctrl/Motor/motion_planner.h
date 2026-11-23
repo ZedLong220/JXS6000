@@ -10,6 +10,12 @@ public:
     BufferedPath bufferedPath;
     MotionPlanner() = default;
 
+    // Timed point moves share the drive's saved speed limit. False means the
+    // requested duration cannot be met; velocityLimit still stays within it.
+    static bool TimedPositionVelocityLimit(uint64_t distanceSteps, float seconds,
+                                          int32_t acceleration, int32_t savedLimit,
+                                          int32_t &velocityLimit);
+
 
     const int32_t CONTROL_FREQUENCY = 20000;                    // Hz
     const int32_t  CONTROL_PERIOD = 1000000 / CONTROL_FREQUENCY; // uS

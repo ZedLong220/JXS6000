@@ -36,3 +36,23 @@ firmware/user-firmware-keil-57/MDK-ARM/user-frimware-keil/
 output.wav
 .env
 .env.*
+
+# Restorable packages and duplicate local archive
+/MotorControl/MotorControl/packages/
+/MotorControl.rar
+
+# Local investigation and build transcripts
+/HMIcode/SmallProject-6000/urdf_paths.txt
+/firmware/jixiebi-V6000/build-result-copy.txt
+/firmware/jixiebi-V6000/verify-sync.txt
+/firmware/user-firmware-keil-57/MDK-ARM/DebugConfig/user-frimware-keil-57_STM32F103CB_1.0.0.dbgconf
+/build_now.txt
+/build_tail.txt
+/hmi_after_sdk_fix.txt
+/hmi_build_result*.txt
+/installed_sdks.txt
+/line69_diag.txt
+/line_now.txt
+/sdk_lines.txt
+/verified_build.txt
+/verified_result.txt

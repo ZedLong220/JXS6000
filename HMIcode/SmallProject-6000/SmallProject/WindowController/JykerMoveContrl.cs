@@ -76,7 +76,7 @@ namespace SmallProject.WindowController
                     JLog.Info("固定取放路径被主控拒绝：请确认主控空闲并已更新固件。");
                     return;
                 }
-                JLog.Info("固定取放路径已启动：主控将确认J1～J5在线且位于零点（J6不参与），然后执行 (-15,70,-300,90,-90,0)，J3到-240°左右时舵机打开到90° → 到位后舵机回0° → (-50,70,-300,90,-90,0) → 舵机90° → J1～J5同步回零，回零开始时舵机同步回0°，使J3回到-240°左右时舵机已关闭。J6保持原位。");
+                JLog.Info($"固定取放路径已启动：主控确认J1～J5在线且位于零点（J6不参与），按6.56秒设定运动到 (-15,75,-300,65,-90,0)，J3到-240°左右时舵机到90° → 到位后舵机回0°，等待1秒 → {FixedPickArcInfo.Description} → 终点J1=-85.573°时舵机90°，等待1秒 → J1～J5按6.56秒设定同步回零，从回零同步启动计时，第3.28秒令舵机回0°。圆弧已按当前URDF及电机限速15圈/秒、加速度15圈/秒²校核，实际以编码器到位为准。J6保持原位。");
                 if(!await WaitForMovementCompletionAsync(statusVersion,completionCount,token)) return;
 
                 int[] fixedAxes={0,1,2,3,4};

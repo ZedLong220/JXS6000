@@ -106,7 +106,7 @@
                         <Button Grid.Column="1" x:Name="bt_ClawLoopStart" Margin="3">查询PWM状态</Button>
                     </Grid>
                     <Button Grid.Row="3" x:Name="bt_FixedPickSequence" Margin="3"
-                            ToolTip="主控内置动作（J1～J5参与，J6保持原位）：J3接近首个-250°时舵机到90°且不停顿续接-300°；末尾舵机90°后五轴直接回零，舵机同步回0°">执行固定取放路径</Button>
+                            ToolTip="主控内置动作（J1～J5参与，J6保持原位）：到达(-15,75,-300,65,-90,0)后执行圆弧，连续经过(-50.287,90,-280,30,-90,0)，到达(-85.573,70,-300,70,-90,0)后舵机90°；回零6.56秒，在第3.28秒令舵机回0°。需要配套新主控固件，实际以编码器到位为准">执行固定取放路径</Button>
                     <TextBlock Grid.Row="4" x:Name="tb_GripperStatus" Margin="5" TextWrapping="Wrap"
                                Text="上电无脉冲；50Hz，500～2500µs。显示为指令值，无舵机位置反馈。" />
                 </Grid>

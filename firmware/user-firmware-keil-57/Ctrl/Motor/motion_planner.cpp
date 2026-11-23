@@ -1,6 +1,30 @@
 #include "motion_planner.h"
 #include "math.h"
 
+bool MotionPlanner::TimedPositionVelocityLimit(uint64_t distanceSteps, float seconds,
+                                             int32_t acceleration, int32_t savedLimit,
+                                             int32_t &velocityLimit)
+{
+    velocityLimit = savedLimit > 0 ? savedLimit : 0;
+    if (!std::isfinite(seconds) || seconds <= 0.0f ||
+        acceleration <= 0 || savedLimit <= 0) return false;
+    if (distanceSteps == 0U) {
+        velocityLimit = 0;
+        return true;
+    }
+
+    const double time = seconds;
+    const double distance = (double)distanceSteps;
+    const double discriminant = time * time - 4.0 * distance / acceleration;
+    if (discriminant < 0.0) return false;
+
+    // Equivalent to a*(T-sqrt(T*T-4*d/a))/2 without cancellation on short moves.
+    const double required = 2.0 * distance / (time + sqrt(discriminant));
+    if (required > savedLimit) return false;
+    velocityLimit = required >= 1.0 ? (int32_t)required : 1;
+    return true;
+}
+
 
 void MotionPlanner::CurrentTracker::Init()
 {
@@ -269,8 +293,10 @@ void MotionPlanner::PositionTracker::CalcSoftGoal(int32_t _goalPosition)
                         CalcVelocityIntegral(velocityUpAcc);
                         if (trackVelocity >= context->config->ratedVelocity)
                         {
-                            velocityIntegral = 0;
                             trackVelocity = context->config->ratedVelocity;
+                            // Discard residual acceleration when the speed
+                            // ceiling is reached, before entering cruise.
+                            ResetMotionState();
                         }
                     } else if (trackVelocity > context->config->ratedVelocity)
                     {
@@ -314,8 +340,8 @@ void MotionPlanner::PositionTracker::CalcSoftGoal(int32_t _goalPosition)
                         CalcVelocityIntegral(-velocityUpAcc);
                         if (trackVelocity <= -context->config->ratedVelocity)
                         {
-                            velocityIntegral = 0;
                             trackVelocity = -context->config->ratedVelocity;
+                            ResetMotionState();
                         }
                     } else if (trackVelocity < -context->config->ratedVelocity)
                     {
